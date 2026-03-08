@@ -36,4 +36,4 @@ Local REST transcription service: FastAPI + mlx-whisper on Apple Silicon. No Doc
 - **Formatting:** Black (line-length 88, target py312). Ruff for linting (E, F, I rules). `known-first-party = ["app"]` for isort.
 - **Testing:** pytest-asyncio with `asyncio_mode = "auto"` — async tests don't need `@pytest.mark.asyncio`. Mock mlx-whisper via `patch.dict(sys.modules, {"mlx_whisper": mock})` since it's imported inside methods. Integration tests patch `deps._transcriber` and `deps._media_service` globals directly.
 - **File validation:** Extension whitelist + magic bytes verification + size limit. See `MAGIC_BYTES` dict in `app/utils/file_handler.py`.
-- **Async jobs:** In-memory only (`_jobs` dict in `app/api/v1/transcribe.py`). Lost on restart. Placeholder for v2.
+- **Async jobs:** Not yet implemented (v2). Only the sync `POST /api/v1/transcribe` endpoint is active.

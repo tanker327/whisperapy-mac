@@ -73,22 +73,3 @@ async def test_transcribe_unsupported_format(client):
     assert response.status_code == 415
 
 
-@pytest.mark.asyncio
-async def test_create_async_job(client):
-    """POST /api/v1/transcribe/jobs creates a pending job."""
-    file_content = b"ID3" + b"\x00" * 200
-    response = await client.post(
-        "/api/v1/transcribe/jobs",
-        files={"file": ("test.mp3", file_content, "audio/mpeg")},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "pending"
-    assert "job_id" in data
-
-
-@pytest.mark.asyncio
-async def test_get_job_not_found(client):
-    """GET /api/v1/transcribe/jobs/{id} for nonexistent job returns error."""
-    response = await client.get("/api/v1/transcribe/jobs/nonexistent")
-    assert response.status_code == 500  # WhisperapyError default

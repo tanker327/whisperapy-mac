@@ -80,19 +80,6 @@ curl -X POST http://localhost:8000/api/v1/transcribe \
 | `word_timestamps` | bool | `false` | Include word-level timestamps |
 | `output_format` | string | `json` | `json`, `text`, `srt`, or `vtt` |
 
-### Async Jobs
-
-```bash
-# Submit job
-curl -X POST http://localhost:8000/api/v1/transcribe/jobs -F "file=@video.mp4"
-
-# Poll status
-curl http://localhost:8000/api/v1/transcribe/jobs/{job_id}
-
-# Cancel job
-curl -X DELETE http://localhost:8000/api/v1/transcribe/jobs/{job_id}
-```
-
 ## Development
 
 ```bash
