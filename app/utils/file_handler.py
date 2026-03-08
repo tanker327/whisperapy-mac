@@ -12,21 +12,16 @@ from app.core.exceptions import (
     UnsupportedFormatError,
 )
 
-# Magic bytes for supported formats
+# Formats that use ISO base media file format (ftyp box at offset 4)
+_FTYP_FORMATS = {"mp4", "mov", "m4a"}
+
+# Magic bytes for other supported formats
 MAGIC_BYTES: dict[str, list[bytes]] = {
-    "mp4": [
-        b"\x00\x00\x00\x18ftypmp4",
-        b"\x00\x00\x00\x1cftypmp4",
-        b"\x00\x00\x00\x20ftypisom",
-        b"\x00\x00\x00\x1cftypisom",
-    ],
-    "mov": [b"\x00\x00\x00\x14ftypqt"],
     "mkv": [b"\x1a\x45\xdf\xa3"],
     "webm": [b"\x1a\x45\xdf\xa3"],
     "avi": [b"RIFF"],
     "mp3": [b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"ID3"],
     "wav": [b"RIFF"],
-    "m4a": [b"\x00\x00\x00\x20ftypM4A", b"\x00\x00\x00\x1cftypM4A"],
     "ogg": [b"OggS"],
     "flac": [b"fLaC"],
     "aac": [b"\xff\xf1", b"\xff\xf9"],
@@ -68,6 +63,14 @@ async def validate_upload(file: UploadFile, settings: Settings) -> None:
 
 def _validate_magic_bytes(content: bytes, ext: str) -> None:
     """Verify file content matches expected magic bytes."""
+    # ISO base media formats: check for 'ftyp' at byte offset 4
+    if ext in _FTYP_FORMATS:
+        if len(content) >= 8 and content[4:8] == b"ftyp":
+            return
+        raise UnsupportedFormatError(
+            f"File content does not match expected format for .{ext}"
+        )
+
     signatures = MAGIC_BYTES.get(ext)
     if not signatures:
         return  # No signature check for this format
