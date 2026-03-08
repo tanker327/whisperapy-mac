@@ -23,7 +23,8 @@ async def transcribe_sync(
     """Synchronous transcription — upload file, wait, receive transcript."""
     await validate_upload(file, settings)
     input_path = await save_temp_file(file, settings)
-    wav_path = input_path.with_suffix(".wav")
+    # Avoid in-place ffmpeg writes when upload is already .wav.
+    wav_path = input_path.with_name(f"{input_path.stem}_extracted.wav")
 
     try:
         media.extract_audio(input_path, wav_path)
