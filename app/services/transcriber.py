@@ -41,7 +41,6 @@ class TranscriberService:
         self,
         audio_path: str,
         language: str | None = None,
-        word_timestamps: bool = False,
     ) -> TranscribeResponse:
         """Transcribe an audio file and return structured response."""
         if not self._ready:
@@ -55,7 +54,6 @@ class TranscriberService:
         try:
             kwargs: dict = {
                 "path_or_hf_repo": self._model_repo,
-                "word_timestamps": word_timestamps,
             }
             if language and language != "auto":
                 kwargs["language"] = language

@@ -15,7 +15,6 @@ router = APIRouter(prefix="/transcribe", tags=["transcription"])
 async def transcribe_sync(
     file: UploadFile,
     language: str = Form(default="auto"),
-    word_timestamps: bool = Form(default=False),
     include_segments: bool = Form(default=False),
     settings: Settings = Depends(get_settings),
     transcriber: TranscriberService = Depends(get_transcriber),
@@ -31,7 +30,6 @@ async def transcribe_sync(
         result = transcriber.transcribe(
             str(wav_path),
             language=language if language != "auto" else None,
-            word_timestamps=word_timestamps,
         )
         logger.info(
             f"Transcription complete: {file.filename} | "

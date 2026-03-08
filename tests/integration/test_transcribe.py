@@ -54,7 +54,7 @@ async def test_sync_transcribe(client):
     response = await client.post(
         "/api/v1/transcribe",
         files={"file": ("test.mp3", file_content, "audio/mpeg")},
-        data={"language": "auto", "word_timestamps": "false"},
+        data={"language": "auto"},
     )
     assert response.status_code == 200
     data = response.json()
