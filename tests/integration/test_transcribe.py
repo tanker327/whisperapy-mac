@@ -54,13 +54,29 @@ async def test_sync_transcribe(client):
     response = await client.post(
         "/api/v1/transcribe",
         files={"file": ("test.mp3", file_content, "audio/mpeg")},
-        data={"language": "auto", "word_timestamps": "false", "output_format": "json"},
+        data={"language": "auto", "word_timestamps": "false"},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["text"] == "Hello world"
     assert data["job_id"] == "test-123"
     assert data["language_detected"] == "en"
+    assert data["segments"] == []
+
+
+@pytest.mark.asyncio
+async def test_sync_transcribe_with_segments(client):
+    """POST /api/v1/transcribe with include_segments=true returns segments."""
+    file_content = b"ID3" + b"\x00" * 200
+    response = await client.post(
+        "/api/v1/transcribe",
+        files={"file": ("test.mp3", file_content, "audio/mpeg")},
+        data={"include_segments": "true"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["segments"]) == 1
+    assert data["segments"][0]["text"] == "Hello world"
 
 
 @pytest.mark.asyncio

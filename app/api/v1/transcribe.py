@@ -16,6 +16,7 @@ async def transcribe_sync(
     file: UploadFile,
     language: str = Form(default="auto"),
     word_timestamps: bool = Form(default=False),
+    include_segments: bool = Form(default=False),
     settings: Settings = Depends(get_settings),
     transcriber: TranscriberService = Depends(get_transcriber),
     media: MediaService = Depends(get_media_service),
@@ -38,6 +39,8 @@ async def transcribe_sync(
             f"duration={result.duration_seconds}s | "
             f"processing={result.processing_time_seconds}s"
         )
+        if not include_segments:
+            result.segments = []
         return result
     finally:
         cleanup_temp(input_path, wav_path)
