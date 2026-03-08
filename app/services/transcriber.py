@@ -74,6 +74,6 @@ class TranscriberService:
             language_detected=result.get("language"),
             duration_seconds=segments[-1].end if segments else None,
             processing_time_seconds=round(processing_time, 2),
-            text=result.get("text", "").strip(),
+            text=" ".join(s.text for s in segments),
             segments=segments,
         )
