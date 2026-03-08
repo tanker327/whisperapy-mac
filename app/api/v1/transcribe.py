@@ -3,10 +3,7 @@ from loguru import logger
 
 from app.config import Settings
 from app.dependencies import get_media_service, get_settings, get_transcriber
-from app.schemas.transcription import (
-    OutputFormat,
-    TranscribeResponse,
-)
+from app.schemas.transcription import TranscribeResponse
 from app.services.media import MediaService
 from app.services.transcriber import TranscriberService
 from app.utils.file_handler import cleanup_temp, save_temp_file, validate_upload
@@ -19,7 +16,6 @@ async def transcribe_sync(
     file: UploadFile,
     language: str = Form(default="auto"),
     word_timestamps: bool = Form(default=False),
-    output_format: OutputFormat = Form(default=OutputFormat.json),
     settings: Settings = Depends(get_settings),
     transcriber: TranscriberService = Depends(get_transcriber),
     media: MediaService = Depends(get_media_service),
