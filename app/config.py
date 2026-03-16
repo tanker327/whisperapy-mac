@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     # File Handling
     max_file_size_mb: int = 500
-    temp_dir: Path = Path("./tmp")
+    temp_dir: Path = Path("/tmp/whisperapy")
     allowed_extensions: list[str] = [
         "mp4",
         "mov",

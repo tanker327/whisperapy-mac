@@ -15,7 +15,7 @@ format:
 check: lint format test
 
 clean:
-	rm -rf tmp/*
+	rm -rf /tmp/whisperapy/*
 	find . -type d -name __pycache__ -exec rm -rf {} +
 
 install:

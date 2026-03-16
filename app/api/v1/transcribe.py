@@ -59,7 +59,7 @@ async def transcribe_url(
 ) -> TranscribeResponse:
     """Download a file from URL and transcribe it."""
     input_path = await download_file_from_url(body.url, settings)
-    wav_path = input_path.with_suffix(".wav")
+    wav_path = input_path.with_name(f"{input_path.stem}_extracted.wav")
 
     try:
         media.extract_audio(input_path, wav_path)
