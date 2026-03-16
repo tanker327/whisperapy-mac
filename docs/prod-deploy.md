@@ -19,13 +19,13 @@ cp .env.example .env
 make install
 ```
 
-## Quick Start
+## Quick Start (Foreground Check)
 
 ```bash
-make dev
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-First run downloads the model (~1.5 GB). After that, the server starts at `http://localhost:8000`.
+First run downloads the model (typically >1 GB). After that, the server starts at `http://localhost:8000`.
 
 ## Run as a Background Service (launchd)
 
@@ -65,16 +65,19 @@ cat > ~/Library/LaunchAgents/com.whisperapy.mac.plist << 'EOF'
 EOF
 ```
 
-Update `/path/to/whisperapy-mac` and `/path/to/.local/bin/uv` to your actual paths. Find the `uv` path with `which uv`.
+Update `/path/to/whisperapy-mac` and `/path/to/.local/bin/uv` to your actual paths. Use an absolute path from `which uv` (for example, `/opt/homebrew/bin/uv` on Apple Silicon Macs with Homebrew).
 
 ### Manage the service
 
 ```bash
-# Start
-launchctl load ~/Library/LaunchAgents/com.whisperapy.mac.plist
+# Start (first time, or after edits)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisperapy.mac.plist
+
+# Restart
+launchctl kickstart -k gui/$(id -u)/com.whisperapy.mac
 
 # Stop
-launchctl unload ~/Library/LaunchAgents/com.whisperapy.mac.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.whisperapy.mac.plist
 
 # Check logs
 tail -f /tmp/whisperapy.log
