@@ -41,6 +41,13 @@ class TranscriptionError(WhisperapyError):
         super().__init__(message)
 
 
+class DownloadError(WhisperapyError):
+    """File download from URL failed."""
+
+    def __init__(self, message: str = "File download failed"):
+        super().__init__(message)
+
+
 class ModelNotReadyError(WhisperapyError):
     """Model not yet loaded at startup."""
 

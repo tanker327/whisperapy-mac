@@ -2,11 +2,13 @@ import re
 import uuid
 from pathlib import Path
 
+import httpx
 from fastapi import UploadFile
 from loguru import logger
 
 from app.config import Settings
 from app.core.exceptions import (
+    DownloadError,
     FileTooLargeError,
     FileValidationError,
     UnsupportedFormatError,
@@ -100,6 +102,47 @@ async def save_temp_file(file: UploadFile, settings: Settings) -> Path:
 
     logger.info(f"Saved temp file: {unique_name} ({len(content)} bytes)")
     return dest
+
+
+async def download_file_from_url(url: str, settings: Settings) -> Path:
+    """Stream-download a URL to a temp file, enforcing max file size."""
+    settings.temp_dir.mkdir(parents=True, exist_ok=True)
+    max_bytes = settings.max_file_size_mb * 1024 * 1024
+
+    unique_name = f"download_{uuid.uuid4().hex[:8]}"
+    dest = settings.temp_dir / unique_name
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code >= 400:
+                    raise DownloadError(
+                        f"Download failed with HTTP {response.status_code}"
+                    )
+
+                downloaded = 0
+                with open(dest, "wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                        downloaded += len(chunk)
+                        if downloaded > max_bytes:
+                            limit = settings.max_file_size_mb
+                            raise FileTooLargeError(
+                                f"Download exceeds limit of {limit}MB"
+                            )
+                        f.write(chunk)
+
+        logger.info(f"Downloaded {downloaded} bytes from URL to {dest.name}")
+        return dest
+    except (httpx.HTTPError, OSError) as exc:
+        if dest.exists():
+            dest.unlink()
+        if isinstance(exc, (FileTooLargeError, DownloadError)):
+            raise
+        raise DownloadError(f"Download failed: {exc}") from exc
+    except (FileTooLargeError, DownloadError):
+        if dest.exists():
+            dest.unlink()
+        raise
 
 
 def cleanup_temp(*paths: Path) -> None:

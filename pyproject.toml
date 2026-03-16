@@ -10,10 +10,11 @@ dependencies = [
   "python-multipart",
   "pydantic-settings",
   "loguru",
+  "httpx",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "black", "ruff"]
+dev = ["pytest", "pytest-asyncio", "black", "ruff"]
 
 [build-system]
 requires = ["hatchling"]

@@ -41,6 +41,7 @@ def register_error_handlers(app: FastAPI) -> None:
 def _get_status_code(exc: WhisperapyError) -> int:
     from app.core.exceptions import (
         AudioExtractionError,
+        DownloadError,
         FileTooLargeError,
         FileValidationError,
         ModelNotReadyError,
@@ -52,6 +53,7 @@ def _get_status_code(exc: WhisperapyError) -> int:
         FileTooLargeError: 413,
         UnsupportedFormatError: 415,
         FileValidationError: 422,
+        DownloadError: 422,
         AudioExtractionError: 500,
         TranscriptionError: 500,
         ModelNotReadyError: 503,

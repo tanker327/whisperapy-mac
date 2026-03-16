@@ -37,9 +37,7 @@ class MediaService:
             )
             if result.returncode != 0:
                 logger.error(f"ffmpeg stderr: {result.stderr}")
-                raise AudioExtractionError(
-                    f"ffmpeg failed: {result.stderr[-500:]}"
-                )
+                raise AudioExtractionError(f"ffmpeg failed: {result.stderr[-500:]}")
         except subprocess.TimeoutExpired as e:
             raise AudioExtractionError("ffmpeg timed out after 300 seconds") from e
         except AudioExtractionError:

@@ -10,6 +10,12 @@ class JobStatus(str, Enum):
     failed = "failed"
 
 
+class TranscribeUrlRequest(BaseModel):
+    url: str
+    language: str = "auto"
+    include_segments: bool = False
+
+
 class Segment(BaseModel):
     start: float
     end: float

@@ -89,3 +89,52 @@ async def test_transcribe_unsupported_format(client):
     assert response.status_code == 415
 
 
+@pytest.mark.asyncio
+async def test_transcribe_url(client, tmp_path):
+    """POST /api/v1/transcribe/url downloads and transcribes."""
+
+    async def fake_download(url, settings):
+        p = settings.temp_dir / "downloaded"
+        p.write_bytes(b"fake audio")
+        return p
+
+    with patch(
+        "app.api.v1.transcribe.download_file_from_url",
+        side_effect=fake_download,
+    ):
+        response = await client.post(
+            "/api/v1/transcribe/url",
+            json={"url": "http://example.com/audio.mp3"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["text"] == "Hello world"
+    assert data["job_id"] == "test-123"
+    assert data["segments"] == []
+
+
+@pytest.mark.asyncio
+async def test_transcribe_url_with_segments(client, tmp_path):
+    """POST /api/v1/transcribe/url with include_segments returns segments."""
+
+    async def fake_download(url, settings):
+        p = settings.temp_dir / "downloaded"
+        p.write_bytes(b"fake audio")
+        return p
+
+    with patch(
+        "app.api.v1.transcribe.download_file_from_url",
+        side_effect=fake_download,
+    ):
+        response = await client.post(
+            "/api/v1/transcribe/url",
+            json={
+                "url": "http://example.com/audio.mp3",
+                "include_segments": True,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["segments"]) == 1
