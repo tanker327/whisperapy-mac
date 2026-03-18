@@ -52,6 +52,11 @@ cat > ~/Library/LaunchAgents/com.whisperapy.mac.plist << 'EOF'
         <string>--port</string>
         <string>8000</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
