@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     default_language: str = "auto"
 
     # File Handling
-    max_file_size_mb: int = 500
+    max_file_size_mb: int = 1500
     temp_dir: Path = Path("/tmp/whisperapy")
     allowed_extensions: list[str] = [
         "mp4",
