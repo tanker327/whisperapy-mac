@@ -11,7 +11,7 @@ def test_default_settings():
     assert settings.debug is False
     assert settings.host == "0.0.0.0"
     assert settings.port == 8000
-    assert settings.max_file_size_mb == 500
+    assert settings.max_file_size_mb == 1500
     assert "mp4" in settings.allowed_extensions
     assert "mp3" in settings.allowed_extensions
 

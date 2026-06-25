@@ -1,11 +1,15 @@
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from app.config import Settings
 from app.core.exceptions import ModelNotReadyError, TranscriptionError
 from app.schemas.transcription import Segment, TranscribeResponse
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class TranscriberService:
@@ -77,3 +81,43 @@ class TranscriberService:
             text=" ".join(s.text for s in segments),
             segments=segments,
         )
+
+    def transcribe_array(
+        self,
+        audio: "np.ndarray",
+        language: str | None = None,
+        initial_prompt: str | None = None,
+    ) -> dict:
+        """Transcribe a raw float32 audio array (16kHz mono, normalized to [-1, 1]).
+
+        Returns the detected language and segments with times relative to the
+        start of ``audio``. Used by the streaming endpoint, which feeds rolling
+        in-memory windows rather than files.
+        """
+        if not self._ready:
+            raise ModelNotReadyError()
+
+        import mlx_whisper
+
+        kwargs: dict = {"path_or_hf_repo": self._model_repo}
+        if language and language != "auto":
+            kwargs["language"] = language
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+
+        try:
+            result = mlx_whisper.transcribe(audio, **kwargs)
+        except Exception as e:
+            raise TranscriptionError(f"Transcription failed: {e}") from e
+
+        return {
+            "language": result.get("language"),
+            "segments": [
+                {
+                    "start": s["start"],
+                    "end": s["end"],
+                    "text": s["text"].strip(),
+                }
+                for s in result.get("segments", [])
+            ],
+        }

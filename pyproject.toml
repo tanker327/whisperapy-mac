@@ -11,6 +11,8 @@ dependencies = [
   "pydantic-settings",
   "loguru",
   "httpx",
+  "numpy",
+  "websockets",
 ]
 
 [project.optional-dependencies]

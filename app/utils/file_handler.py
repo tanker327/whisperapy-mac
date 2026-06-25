@@ -112,8 +112,11 @@ async def download_file_from_url(url: str, settings: Settings) -> Path:
     unique_name = f"download_{uuid.uuid4().hex[:8]}"
     dest = settings.temp_dir / unique_name
 
+    # Generous read timeout so streaming a multi-GB file over a slow link
+    # doesn't trip httpx's 5s default mid-download.
+    timeout = httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=15.0)
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
             async with client.stream("GET", url) as response:
                 if response.status_code >= 400:
                     raise DownloadError(
