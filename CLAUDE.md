@@ -22,11 +22,13 @@ uv run pytest tests/unit/test_transcriber.py::test_transcribe_returns_response -
 
 Local REST transcription service: FastAPI + mlx-whisper on Apple Silicon. No Docker — requires native Metal GPU access. Requires `ffmpeg` installed on the system.
 
-**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `GET /health`, `GET /health/model`. Default model: `mlx-community/whisper-large-v3-turbo`.
+**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `WS /api/v1/transcribe/stream` (realtime streaming), `GET /health`, `GET /health/model`. Default model: `mlx-community/whisper-large-v3-turbo`.
 
 **Request flow (upload):** Client → Middleware (request ID, timing) → Endpoint → `file_handler.validate_upload` (extension + magic bytes + size) → `save_temp_file` → `MediaService.extract_audio` (ffmpeg → 16kHz WAV) → `TranscriberService.transcribe` (mlx-whisper) → `cleanup_temp` → Response
 
 **Request flow (URL):** Client → Middleware → Endpoint → `file_handler.download_file_from_url` (httpx streaming + size limit, no format validation) → `MediaService.extract_audio` → `TranscriberService.transcribe` → `cleanup_temp` → Response
+
+**Request flow (stream):** Client (WS) → `transcribe_stream` → `StreamingSession` accumulates raw PCM (16-bit LE mono, 16kHz) → every `stream_window_seconds` of new audio, `TranscriberService.transcribe_array` (mlx-whisper on an in-memory float32 array, run via `asyncio.to_thread`) → emits `partial`/`final` JSON frames. mlx-whisper has no incremental decoding API, so streaming is approximated by re-transcribing a rolling window: the last segment of each pass is the still-forming `partial`; earlier segments are committed as `final` and the buffer is trimmed up to the partial's start. Committed text feeds back as `initial_prompt`. The model singleton serializes inference across concurrent streams. WS frames bypass the HTTP middleware/error-handler stack — errors are sent as `{"type": "error"}` frames. See `scripts/stream_client.py` for an example/manual smoke test.
 
 **Dependency injection:** Services are module-level singletons in `app/dependencies.py`. `init_services()` is called once during FastAPI lifespan startup. Endpoints inject via `Depends(get_transcriber)`, `Depends(get_media_service)`, `Depends(get_settings)`. Settings use `@lru_cache`.
 
