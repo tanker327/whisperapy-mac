@@ -1,10 +1,11 @@
 # whisperapy-mac
 
-Local REST transcription service powered by [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) on Apple Silicon. No cloud, no usage fees, full privacy.
+Local REST transcription **and embedding** service powered by [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) and [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) on Apple Silicon. No cloud, no usage fees, full privacy.
 
 - **Mac native** — direct Metal GPU access via MLX (no Docker)
 - **Fast** — `whisper-large-v3-turbo` runs ~8x faster than base, using only ~1.5 GB of unified memory
 - **Any format** — accepts video and audio files (mp4, mov, mkv, avi, webm, mp3, wav, m4a, ogg, flac, aac)
+- **Embeddings** — OpenAI-compatible `/api/v1/embeddings` endpoint backed by `Qwen3-Embedding-4B-4bit-DWQ` (drop-in for OpenAI SDK / LangChain clients)
 - **Production-grade** — structured logging, request tracing, global error handling
 
 ## Prerequisites
@@ -23,7 +24,7 @@ make install-dev
 # Copy and configure environment
 cp .env.example .env
 
-# Start the server (downloads model on first run, ~1.5 GB)
+# Start the server (downloads models on first run: whisper ~1.5 GB + Qwen3-Embedding-4B-4bit-DWQ ~2 GB)
 make dev
 ```
 
@@ -43,6 +44,8 @@ curl http://localhost:8000/health
   "version": "1.0.0",
   "model": "whisper-large-v3-turbo",
   "model_loaded": true,
+  "embedding_model": "Qwen3-Embedding-4B-4bit-DWQ",
+  "embedding_model_loaded": true,
   "uptime_seconds": 3600
 }
 ```
@@ -80,6 +83,37 @@ curl -X POST http://localhost:8000/api/v1/transcribe \
 | `word_timestamps` | bool | `false` | Include word-level timestamps |
 | `output_format` | string | `json` | `json`, `text`, `srt`, or `vtt` |
 
+### Embeddings
+
+OpenAI-compatible. Accepts a single string or a list of strings as `input`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input": ["hello world", "goodbye"]}'
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "object": "embedding", "index": 0, "embedding": [0.01, -0.02, "..."] },
+    { "object": "embedding", "index": 1, "embedding": [0.03, -0.04, "..."] }
+  ],
+  "model": "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
+  "usage": { "prompt_tokens": 6, "total_tokens": 6 }
+}
+```
+
+**Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `input` | string \| string[] | required | Text (or list of texts) to embed |
+| `model` | string | `null` | Echoed back; the server-configured model is authoritative |
+| `encoding_format` | string | `float` | Encoding of the returned vectors |
+| `prompt` | string | `null` | Optional instruction prepended to each input (e.g. for Qwen3 query-side embeddings) |
+
 ## Development
 
 ```bash
@@ -99,7 +133,8 @@ All settings are configured via environment variables or `.env` file. See [`.env
 | `DEBUG` | `false` | Enable debug logging |
 | `HOST` | `0.0.0.0` | Server bind address |
 | `PORT` | `8000` | Server port |
-| `MODEL_REPO` | `mlx-community/whisper-large-v3-turbo` | HuggingFace model repo |
+| `MODEL_REPO` | `mlx-community/whisper-large-v3-turbo` | HuggingFace transcription model repo |
 | `DEFAULT_LANGUAGE` | `auto` | Default language for transcription |
+| `EMBEDDING_MODEL_REPO` | `mlx-community/Qwen3-Embedding-4B-4bit-DWQ` | HuggingFace embedding model repo |
 | `MAX_FILE_SIZE_MB` | `500` | Maximum upload file size |
 | `TEMP_DIR` | `./tmp` | Directory for temporary files |

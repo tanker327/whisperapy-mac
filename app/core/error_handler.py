@@ -42,6 +42,7 @@ def _get_status_code(exc: WhisperapyError) -> int:
     from app.core.exceptions import (
         AudioExtractionError,
         DownloadError,
+        EmbeddingError,
         FileTooLargeError,
         FileValidationError,
         ModelNotReadyError,
@@ -56,6 +57,7 @@ def _get_status_code(exc: WhisperapyError) -> int:
         DownloadError: 422,
         AudioExtractionError: 500,
         TranscriptionError: 500,
+        EmbeddingError: 500,
         ModelNotReadyError: 503,
     }
     return status_map.get(type(exc), 500)

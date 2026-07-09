@@ -24,10 +24,16 @@ async def lifespan(app: FastAPI):
     # Create temp directory
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load model
+    # Load models
     logger.info(f"Starting {settings.app_name} v{settings.version}")
     transcriber = init_services(settings)
     transcriber.load()
+
+    from app.dependencies import get_embedder
+
+    logger.info(f"Loading embedding model: {settings.embedding_model_repo}")
+    get_embedder().load()
+
     _start_time = time.time()
     logger.info("Server ready")
 
@@ -63,26 +69,32 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        from app.dependencies import get_transcriber
+        from app.dependencies import get_embedder, get_transcriber
 
         transcriber = get_transcriber()
+        embedder = get_embedder()
         return {
             "status": "ok",
             "version": settings.version,
             "model": settings.model_repo.split("/")[-1],
             "model_loaded": transcriber.is_ready(),
+            "embedding_model": settings.embedding_model_repo.split("/")[-1],
+            "embedding_model_loaded": embedder.is_ready(),
             "uptime_seconds": round(time.time() - _start_time),
         }
 
     @app.get("/health/model")
     async def health_model():
-        from app.dependencies import get_transcriber
+        from app.dependencies import get_embedder, get_transcriber
 
         transcriber = get_transcriber()
+        embedder = get_embedder()
         return {
             "model_repo": settings.model_repo,
             "model_loaded": transcriber.is_ready(),
             "default_language": settings.default_language,
+            "embedding_model_repo": settings.embedding_model_repo,
+            "embedding_model_loaded": embedder.is_ready(),
         }
 
     return app

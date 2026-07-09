@@ -22,17 +22,19 @@ uv run pytest tests/unit/test_transcriber.py::test_transcribe_returns_response -
 
 Local REST transcription service: FastAPI + mlx-whisper on Apple Silicon. No Docker — requires native Metal GPU access. Requires `ffmpeg` installed on the system.
 
-**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `GET /health`, `GET /health/model`. Default model: `mlx-community/whisper-large-v3-turbo`.
+**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `POST /api/v1/embeddings` (OpenAI-compatible, JSON body with `input`), `GET /health`, `GET /health/model`. Default transcription model: `mlx-community/whisper-large-v3-turbo`. Default embedding model: `mlx-community/Qwen3-Embedding-4B-4bit-DWQ`.
 
 **Request flow (upload):** Client → Middleware (request ID, timing) → Endpoint → `file_handler.validate_upload` (extension + magic bytes + size) → `save_temp_file` → `MediaService.extract_audio` (ffmpeg → 16kHz WAV) → `TranscriberService.transcribe` (mlx-whisper) → `cleanup_temp` → Response
 
 **Request flow (URL):** Client → Middleware → Endpoint → `file_handler.download_file_from_url` (httpx streaming + size limit, no format validation) → `MediaService.extract_audio` → `TranscriberService.transcribe` → `cleanup_temp` → Response
 
+**Request flow (embeddings):** Client → Middleware → Endpoint (`app/api/v1/embeddings.py`) → normalize `input` (str or list) to a list → `EmbedderService.embed` (mlx-embeddings / Qwen3) → OpenAI-shaped `{object, data:[{index, embedding}], model, usage}` Response
+
 **Dependency injection:** Services are module-level singletons in `app/dependencies.py`. `init_services()` is called once during FastAPI lifespan startup. Endpoints inject via `Depends(get_transcriber)`, `Depends(get_media_service)`, `Depends(get_settings)`. Settings use `@lru_cache`.
 
 **Error handling:** All domain errors extend `WhisperapyError` (in `app/core/exceptions.py`). Global handlers in `app/core/error_handler.py` map each subclass to an HTTP status code and return consistent `{error, message, request_id}` JSON. Stack traces are never exposed.
 
-**Model lifecycle:** mlx-whisper model loads once at startup via lifespan context manager in `app/main.py`. All requests share the singleton — no per-request load cost. `mlx_whisper` is imported inside methods (not at top-level) to avoid import errors on non-Apple-Silicon machines and in tests.
+**Model lifecycle:** Two models load once at startup via the lifespan context manager in `app/main.py` — the mlx-whisper transcription model (`TranscriberService`) and the mlx-embeddings Qwen3 model (`EmbedderService`). All requests share these singletons — no per-request load cost. Both `mlx_whisper` and `mlx_embeddings` are imported inside methods (not at top-level) to avoid import errors on non-Apple-Silicon machines and in tests.
 
 **Temp file naming:** Both endpoints use `{stem}_extracted.wav` for the ffmpeg output to avoid in-place overwrites when the input is already `.wav`.
 

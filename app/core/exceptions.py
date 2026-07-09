@@ -48,6 +48,13 @@ class DownloadError(WhisperapyError):
         super().__init__(message)
 
 
+class EmbeddingError(WhisperapyError):
+    """Embedding generation failed."""
+
+    def __init__(self, message: str = "Embedding failed"):
+        super().__init__(message)
+
+
 class ModelNotReadyError(WhisperapyError):
     """Model not yet loaded at startup."""
 

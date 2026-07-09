@@ -22,10 +22,13 @@ async def client():
     mock_transcriber = MagicMock()
     mock_transcriber.is_ready.return_value = True
     mock_media = MagicMock()
+    mock_embedder = MagicMock()
+    mock_embedder.is_ready.return_value = True
 
     with (
         patch.object(deps, "_transcriber", mock_transcriber),
         patch.object(deps, "_media_service", mock_media),
+        patch.object(deps, "_embedder", mock_embedder),
         patch.object(deps, "get_settings", return_value=settings),
     ):
         app = create_app()
@@ -42,6 +45,7 @@ async def test_health_endpoint(client):
     assert data["status"] == "ok"
     assert "version" in data
     assert "model_loaded" in data
+    assert data["embedding_model_loaded"] is True
 
 
 @pytest.mark.asyncio
@@ -52,3 +56,5 @@ async def test_health_model_endpoint(client):
     assert "model_repo" in data
     assert "model_loaded" in data
     assert "default_language" in data
+    assert "embedding_model_repo" in data
+    assert data["embedding_model_loaded"] is True
