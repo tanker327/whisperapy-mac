@@ -31,9 +31,10 @@
 ### Key Characteristics
 
 - Mac native — no Docker, no VMs, full Metal GPU access
-- Single model loaded at startup — no per-request load cost
+- Models loaded at startup — no per-request load cost
 - Supports any video or audio format via ffmpeg
 - Sync and async transcription endpoints
+- OpenAI-compatible text-embedding endpoint (Qwen3-Embedding via mlx-embeddings)
 - Multiple output formats: JSON, plain text, SRT, VTT
 - Production-grade: structured logging, error handling, request tracing
 
@@ -59,6 +60,8 @@ The `mlx-whisper` library uses Apple's MLX framework to run directly on Apple Si
 | ASGI Server | `uvicorn` | Production-grade ASGI server |
 | Transcription | `mlx-whisper` | Metal-accelerated on Apple Silicon |
 | Model | `whisper-large-v3-turbo` | Best speed/quality balance |
+| Embeddings | `mlx-embeddings` | Metal-accelerated text embeddings |
+| Embedding Model | `Qwen3-Embedding-4B` | High-quality 2560-dim vectors |
 | Audio Extraction | `ffmpeg` + `ffmpeg-python` | Handles any video/audio format (note: largely unmaintained, fallback to subprocess if needed) |
 | File Uploads | `python-multipart` | Required by FastAPI for multipart/form-data |
 | Settings | `Pydantic BaseSettings` | Type-safe env config |
@@ -157,8 +160,9 @@ Settings
   │   └── port: int              = 8000
   │
   ├── Model
-  │   ├── model_repo: str        = "mlx-community/whisper-large-v3-turbo"
-  │   └── default_language: str  = "auto"
+  │   ├── model_repo: str           = "mlx-community/whisper-large-v3-turbo"
+  │   ├── default_language: str     = "auto"
+  │   └── embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B"
   │
   ├── File Handling
   │   ├── max_file_size_mb: int  = 500
@@ -180,6 +184,7 @@ PORT=8000
 
 MODEL_REPO=mlx-community/whisper-large-v3-turbo
 DEFAULT_LANGUAGE=auto
+EMBEDDING_MODEL_REPO=mlx-community/Qwen3-Embedding-4B
 
 MAX_FILE_SIZE_MB=500
 TEMP_DIR=./tmp
@@ -196,6 +201,7 @@ dependencies = [
   "fastapi",
   "uvicorn",
   "mlx-whisper",
+  "mlx-embeddings",
   "ffmpeg-python",
   "python-multipart",
   "pydantic-settings",
@@ -250,11 +256,41 @@ asyncio_mode = "auto"
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/transcribe` | Sync — upload file, wait, receive transcript |
+| `POST` | `/api/v1/transcribe/url` | Sync — pass a URL, download + transcribe |
 | `POST` | `/api/v1/transcribe/jobs` | Async — upload file, receive `job_id` immediately |
 | `GET` | `/api/v1/transcribe/jobs/{job_id}` | Poll job status and retrieve result |
 | `DELETE` | `/api/v1/transcribe/jobs/{job_id}` | Cancel job and clean up temp files |
 
-### 5.3 Request Schema
+### 5.3 Embedding Endpoint
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/embeddings` | OpenAI-compatible — embed a string or list of strings |
+
+**Request** (`application/json`):
+
+```json
+{ "input": ["hello world", "goodbye"] }
+```
+
+**`EmbeddingResponse`** — OpenAI-compatible envelope:
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "object": "embedding", "index": 0, "embedding": [0.01, -0.02] }
+  ],
+  "model": "mlx-community/Qwen3-Embedding-4B",
+  "usage": { "prompt_tokens": 6, "total_tokens": 6 }
+}
+```
+
+The model runs last-token pooling and returns L2-normalized vectors. An optional
+`prompt` field prepends a Qwen3 instruction to each input (useful for query-side
+retrieval embeddings) while staying OpenAI-compatible when omitted.
+
+### 5.4 Transcription Request Schema
 
 All transcription requests use `multipart/form-data`:
 
@@ -265,7 +301,7 @@ All transcription requests use `multipart/form-data`:
 | `word_timestamps` | bool | No | `false` | Include word-level timestamps |
 | `output_format` | enum | No | `json` | `json` \| `text` \| `srt` \| `vtt` |
 
-### 5.4 Response Schemas
+### 5.5 Response Schemas
 
 **`TranscribeResponse`**
 
@@ -300,7 +336,7 @@ Status values: `pending` | `processing` | `completed` | `failed`
 
 > **Note:** Async job state is stored in-memory only. Jobs are lost on server restart. This is acceptable for v1 as a local service.
 
-### 5.5 Error Response Shape
+### 5.6 Error Response Shape
 
 All errors return a consistent JSON envelope — stack traces are never exposed to clients.
 
@@ -379,6 +415,8 @@ WhisperapyError (base)
   ├── FileValidationError      # malformed upload
   ├── AudioExtractionError     # ffmpeg failed
   ├── TranscriptionError       # mlx-whisper failed
+  ├── DownloadError            # file download from URL failed
+  ├── EmbeddingError           # mlx-embeddings failed
   └── ModelNotReadyError       # model not yet loaded at startup
 ```
 
@@ -423,7 +461,24 @@ TranscriberService
   └── is_ready()        # returns bool for health endpoint
 ```
 
-### 8.2 `MediaService` (`services/media.py`)
+### 8.2 `EmbedderService` (`services/embedder.py`)
+
+- Singleton pattern — one embedding model instance loaded at startup, mirroring `TranscriberService`
+- Wraps `mlx-embeddings` (`load` / `generate`) with a consistent interface
+- Imports `mlx_embeddings` inside methods so non-Apple / CI machines can import the module
+- Returns L2-normalized vectors (last-token pooling) plus a best-effort token count for `usage`
+
+```
+EmbedderService
+  ├── load()            # called at startup, loads model + tokenizer
+  ├── embed(
+  │     texts: list[str],
+  │     prompt: str | None
+  │   ) -> tuple[list[list[float]], int]   # (vectors, prompt_tokens)
+  └── is_ready()        # returns bool for health endpoint
+```
+
+### 8.3 `MediaService` (`services/media.py`)
 
 - Wraps `ffmpeg-python` to extract audio from any input format
 - Output: 16kHz mono WAV (optimal for Whisper)
@@ -438,7 +493,7 @@ MediaService
       ) -> Path          # returns path to extracted WAV
 ```
 
-### 8.3 `FileHandler` (`utils/file_handler.py`)
+### 8.4 `FileHandler` (`utils/file_handler.py`)
 
 | Function | Responsibility |
 |---|---|
