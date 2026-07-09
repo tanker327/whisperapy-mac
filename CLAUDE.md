@@ -22,7 +22,7 @@ uv run pytest tests/unit/test_transcriber.py::test_transcribe_returns_response -
 
 Local REST transcription service: FastAPI + mlx-whisper on Apple Silicon. No Docker — requires native Metal GPU access. Requires `ffmpeg` installed on the system.
 
-**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `POST /api/v1/embeddings` (OpenAI-compatible, JSON body with `input`), `GET /health`, `GET /health/model`. Default transcription model: `mlx-community/whisper-large-v3-turbo`. Default embedding model: `mlx-community/Qwen3-Embedding-4B`.
+**API:** `POST /api/v1/transcribe` (sync, multipart upload), `POST /api/v1/transcribe/url` (sync, JSON body with URL), `POST /api/v1/embeddings` (OpenAI-compatible, JSON body with `input`), `GET /health`, `GET /health/model`. Default transcription model: `mlx-community/whisper-large-v3-turbo`. Default embedding model: `mlx-community/Qwen3-Embedding-4B-4bit-DWQ`.
 
 **Request flow (upload):** Client → Middleware (request ID, timing) → Endpoint → `file_handler.validate_upload` (extension + magic bytes + size) → `save_temp_file` → `MediaService.extract_audio` (ffmpeg → 16kHz WAV) → `TranscriberService.transcribe` (mlx-whisper) → `cleanup_temp` → Response
 

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Model
     model_repo: str = "mlx-community/whisper-large-v3-turbo"
     default_language: str = "auto"
-    embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B"
+    embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
 
     # File Handling
     max_file_size_mb: int = 1500

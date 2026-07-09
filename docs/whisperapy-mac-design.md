@@ -61,7 +61,7 @@ The `mlx-whisper` library uses Apple's MLX framework to run directly on Apple Si
 | Transcription | `mlx-whisper` | Metal-accelerated on Apple Silicon |
 | Model | `whisper-large-v3-turbo` | Best speed/quality balance |
 | Embeddings | `mlx-embeddings` | Metal-accelerated text embeddings |
-| Embedding Model | `Qwen3-Embedding-4B` | High-quality 2560-dim vectors |
+| Embedding Model | `Qwen3-Embedding-4B-4bit-DWQ` | High-quality 2560-dim vectors |
 | Audio Extraction | `ffmpeg` + `ffmpeg-python` | Handles any video/audio format (note: largely unmaintained, fallback to subprocess if needed) |
 | File Uploads | `python-multipart` | Required by FastAPI for multipart/form-data |
 | Settings | `Pydantic BaseSettings` | Type-safe env config |
@@ -162,7 +162,7 @@ Settings
   ├── Model
   │   ├── model_repo: str           = "mlx-community/whisper-large-v3-turbo"
   │   ├── default_language: str     = "auto"
-  │   └── embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B"
+  │   └── embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
   │
   ├── File Handling
   │   ├── max_file_size_mb: int  = 500
@@ -184,7 +184,7 @@ PORT=8000
 
 MODEL_REPO=mlx-community/whisper-large-v3-turbo
 DEFAULT_LANGUAGE=auto
-EMBEDDING_MODEL_REPO=mlx-community/Qwen3-Embedding-4B
+EMBEDDING_MODEL_REPO=mlx-community/Qwen3-Embedding-4B-4bit-DWQ
 
 MAX_FILE_SIZE_MB=500
 TEMP_DIR=./tmp
@@ -281,7 +281,7 @@ asyncio_mode = "auto"
   "data": [
     { "object": "embedding", "index": 0, "embedding": [0.01, -0.02] }
   ],
-  "model": "mlx-community/Qwen3-Embedding-4B",
+  "model": "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
   "usage": { "prompt_tokens": 6, "total_tokens": 6 }
 }
 ```

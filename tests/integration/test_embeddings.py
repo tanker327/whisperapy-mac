@@ -71,5 +71,15 @@ async def test_embeddings_string_input(client):
     assert data["usage"]["prompt_tokens"] == 5
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload", [{"input": []}, {"input": ""}, {"input": ["ok", "  "]}, {}]
+)
+async def test_embeddings_invalid_input_returns_422(client, payload):
+    """Empty/blank/missing input is a client error (422), never a 500."""
+    response = await client.post("/api/v1/embeddings", json=payload)
+    assert response.status_code == 422
+
+
 def settings_repo() -> str:
     return Settings(_env_file=None).embedding_model_repo

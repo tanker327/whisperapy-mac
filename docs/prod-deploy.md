@@ -25,7 +25,7 @@ make install
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-First run downloads both models — the whisper transcription model (~1.5 GB) and the `Qwen3-Embedding-4B` embedding model (~4 GB). After that, the server starts at `http://localhost:8000`.
+First run downloads both models — the whisper transcription model (~1.5 GB) and the `Qwen3-Embedding-4B-4bit-DWQ` embedding model (~2 GB). After that, the server starts at `http://localhost:8000`.
 
 ## Run as a Background Service (launchd)
 
