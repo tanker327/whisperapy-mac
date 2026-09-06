@@ -5,6 +5,34 @@
 
 ---
 
+> **Status (v1.1, September 2026).** This document describes the original v1
+> design. The code review in September 2026 kept the architecture and changed
+> the following; where this document disagrees with `README.md` or
+> `CLAUDE.md`, those files are authoritative.
+>
+> - **Uploads stream to disk** (16-byte magic peek, chunked copy with a size
+>   cap). The whole file is never held in memory.
+> - **Audio is decoded once.** ffmpeg produces a WAV which is loaded into a
+>   numpy array and passed to `mlx_whisper.transcribe`; duration is exact.
+> - **Warm-up is real**: one second of silence, failures propagate and abort
+>   startup. `/health` returns 503 `starting` until both models are loaded.
+> - **Embeddings**: `EMBEDDING_MAX_TOKENS` (422 or flagged truncation),
+>   `EMBEDDING_MAX_BATCH`, chunked GPU batches, `base64`, `dimensions`,
+>   `GET /api/v1/models`. Token counting runs off the MLX thread and feeds the
+>   gate's estimate (`estimated_seconds` replaced `audio_seconds`).
+> - **Security**: optional `API_KEY`, SSRF guard on URL fetches (public hosts
+>   only, re-checked on redirects), CORS from settings.
+> - **Transcription API**: `word_timestamps`, `initial_prompt`, `temperature`,
+>   `condition_on_previous_text`, `output_format` (json / verbose_json / text /
+>   srt / vtt), and an OpenAI-compatible `POST /api/v1/audio/transcriptions`.
+>   `JobStatus` was removed (there are no async jobs).
+> - **Structure**: exceptions carry their own `status_code`; one pure-ASGI
+>   middleware replaces two `BaseHTTPMiddleware`s; health routes live in
+>   `app/api/health.py`; `Annotated` dependency aliases; rotating/JSON logs.
+> - **Tooling**: ruff replaces black, pyright in `make check`, coverage gate,
+>   GitHub Actions CI, pre-commit, `ffmpeg-python` removed, version read from
+>   package metadata.
+
 ## Table of Contents
 
 1. [Project Overview](#1-project-overview)
@@ -647,12 +675,12 @@ MediaService
 
 | Item | Notes |
 |---|---|
-| Rate limiting | `slowapi` middleware — useful if exposed beyond localhost |
-| pytest test suite | Unit + integration coverage for critical paths |
+| Rate limiting | Not done. `API_KEY` auth landed in v1.1; add `slowapi` if a shared deployment needs per-client limits |
+| pytest test suite | **Done (v1.1)** — 180 tests, 90% coverage gate, CI on macOS |
 | Speaker diarization | Identify different speakers in audio |
 | WebSocket streaming | Real-time transcription as audio is processed |
 | Batch processing endpoint | Accept multiple files in one request |
-| Model selection per request | Allow caller to choose model size |
+| Model selection per request | Not done. `model` is accepted on the OpenAI routes but the server model is used |
 
 ---
 
