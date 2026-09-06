@@ -20,3 +20,10 @@ tmp/
 
 # OS
 .DS_Store
+
+# Tooling caches
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
