@@ -1,7 +1,7 @@
 # whisperapy-mac
 
 > **Mac Native · FastAPI · mlx-whisper · Apple Silicon M4**
-> Project Design Document — Version 1.0
+> Project Design Document — Version 1.1
 
 ---
 
@@ -90,14 +90,15 @@ The `mlx-whisper` library uses Apple's MLX framework to run directly on Apple Si
 | Model | `whisper-large-v3-turbo` | Best speed/quality balance |
 | Embeddings | `mlx-embeddings` | Metal-accelerated text embeddings |
 | Embedding Model | `Qwen3-Embedding-4B-4bit-DWQ` | High-quality 2560-dim vectors |
-| Audio Extraction | `ffmpeg` + `ffmpeg-python` | Handles any video/audio format (note: largely unmaintained, fallback to subprocess if needed) |
+| Audio Extraction | `ffmpeg` via `subprocess` + `numpy` | Any container → 16 kHz mono WAV, loaded once into a float32 array |
 | File Uploads | `python-multipart` | Required by FastAPI for multipart/form-data |
 | Settings | `Pydantic BaseSettings` | Type-safe env config |
 | Validation | `Pydantic v2` | Request/response schemas |
 | Logging | `Loguru` | Structured, easy async logging |
-| Formatting | `Black` | Opinionated, consistent style |
-| Linting | `Ruff` | Fast linting + import sorting |
-| Testing | `pytest` + `pytest-asyncio` + `httpx` | Async test client for FastAPI |
+| Formatting + Linting | `Ruff` | `ruff format` (black-compatible) + rules E F I B UP SIM ASYNC RUF |
+| Type checking | `pyright` | Standard mode on `app/`, part of `make check` |
+| Testing | `pytest` + `pytest-asyncio` + `pytest-cov` + `httpx` | Async test client, 90% coverage gate |
+| CI | GitHub Actions (`macos-14`) | `make check` on every push / PR |
 | System Dep | `ffmpeg` (Homebrew) | `brew install ffmpeg` |
 
 ### Model Selection
@@ -119,57 +120,59 @@ The `mlx-whisper` library uses Apple's MLX framework to run directly on Apple Si
 
 ```
 whisperapy-mac/
-├── pyproject.toml              # uv + black + ruff + all dependencies
+├── pyproject.toml              # uv + ruff + pyright + pytest config + all dependencies
+├── uv.lock                     # Pinned dependency versions
 ├── .python-version             # Pin Python 3.12
 ├── .env                        # Local env vars (gitignored)
-├── .env.example                # Committed template — no values
-├── .gitignore                  # tmp/, .env, __pycache__, .venv
-├── Makefile                    # Developer shortcuts
+├── .env.example                # Every setting with its default
+├── .gitignore
+├── .pre-commit-config.yaml     # ruff hooks
+├── .github/workflows/ci.yml    # make check on macos-14
+├── Makefile                    # dev / test / lint / format / typecheck / check / clean
 ├── README.md
+├── CLAUDE.md                   # Architecture notes for coding agents (kept current)
+├── docs/                       # This document + prod-deploy.md (launchd)
 │
 ├── app/
-│   ├── main.py                 # FastAPI app init, lifespan
+│   ├── main.py                 # FastAPI app factory, lifespan (sweep, load models on MLX thread)
 │   ├── config.py               # Pydantic BaseSettings — single source of truth
-│   ├── dependencies.py         # Shared FastAPI deps (get_settings, get_transcriber, get_gate, ...)
+│   ├── dependencies.py         # Singletons + Annotated deps (SettingsDep, GateDep, ...)
 │   │
 │   ├── core/
-│   │   ├── logging.py          # Loguru structured logging setup
-│   │   ├── exceptions.py       # Custom exception classes
-│   │   ├── error_handler.py    # Global FastAPI exception handlers
-│   │   ├── middleware.py       # Request ID injection, timing headers
+│   │   ├── logging.py          # Loguru: text/JSON, rotating file, stdlib interception
+│   │   ├── exceptions.py       # Domain errors, each with status_code + default_message
+│   │   ├── error_handler.py    # Global handlers → {error, message, request_id}
+│   │   ├── middleware.py       # RequestContextMiddleware (pure ASGI): request id + timing
+│   │   ├── security.py         # require_api_key dependency (bearer / X-API-Key)
 │   │   ├── gate.py             # JobGate — one GPU job at a time, bounded queue, 503 + Retry-After
 │   │   └── mlx_worker.py       # MlxWorker — the single thread that loads models and runs inference
 │   │
 │   ├── api/
+│   │   ├── health.py           # /health (503 until ready), /health/model — outside the API key
 │   │   └── v1/
-│   │       ├── __init__.py
-│   │       ├── router.py       # Aggregates all v1 routes
-│   │       └── transcribe.py   # All transcription endpoints
+│   │       ├── router.py       # /api/v1 aggregate, API-key dependency
+│   │       ├── transcribe.py   # /transcribe, /transcribe/url, /audio/transcriptions (one pipeline)
+│   │       ├── embeddings.py   # /embeddings (OpenAI shape, base64, dimensions)
+│   │       └── models.py       # /models
 │   │
 │   ├── services/
-│   │   ├── __init__.py
-│   │   ├── transcriber.py      # mlx-whisper singleton wrapper
-│   │   └── media.py            # ffmpeg audio extraction logic
+│   │   ├── transcriber.py      # mlx-whisper wrapper: real warm-up, TranscribeOptions, numpy input
+│   │   ├── embedder.py         # mlx-embeddings wrapper: token limits, batching, EmbedResult
+│   │   └── media.py            # ffmpeg → WAV → float32 array (single decode), DecodedAudio
 │   │
 │   ├── schemas/
-│   │   ├── __init__.py
-│   │   └── transcription.py    # Pydantic request/response models
+│   │   ├── transcription.py    # TranscribeParams / UrlRequest / Response, Segment, Word, OutputFormat
+│   │   └── embedding.py        # EmbeddingRequest / Response, ModelList
 │   │
 │   └── utils/
-│       ├── __init__.py
-│       └── file_handler.py     # Upload validation, magic bytes, cleanup
+│       ├── file_handler.py     # Streaming upload save, magic bytes, SSRF-guarded download, temp sweep
+│       └── formats.py          # SRT / VTT rendering
 │
-├── tests/
-│   ├── conftest.py             # Shared fixtures, mock model
-│   ├── unit/
-│   │   ├── test_config.py
-│   │   ├── test_file_handler.py
-│   │   └── test_transcriber.py
-│   └── integration/
-│       ├── test_health.py
-│       └── test_transcribe.py
-│
-└── tmp/                        # Temp processing files (gitignored)
+└── tests/
+    ├── conftest.py             # make_client(**settings) with mocked services + fresh gate
+    ├── unit/                   # config, gate, worker, media, transcriber, embedder, file_handler,
+    │                           # formats, logging, middleware, dependencies
+    └── integration/            # transcribe, embeddings, health, auth, errors, busy, lifespan
 ```
 
 ---
@@ -184,81 +187,82 @@ All configuration is driven by environment variables through Pydantic's `BaseSet
 Settings
   ├── App
   │   ├── app_name: str          = "whisperapy-mac"
-  │   ├── version: str           = "1.0.0"
   │   ├── debug: bool            = False
-  │   ├── host: str              = "0.0.0.0"
-  │   └── port: int              = 8000
+  │   └── version (property)     # from package metadata, not configurable
   │
-  ├── Model
-  │   ├── model_repo: str           = "mlx-community/whisper-large-v3-turbo"
-  │   ├── default_language: str     = "auto"
-  │   └── embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
+  ├── Security
+  │   ├── api_key: str | None    = None   # bearer / X-API-Key on /api/v1 when set
+  │   ├── cors_origins: list     = []     # empty disables CORS
+  │   └── allow_private_urls     = False  # SSRF guard on /transcribe/url
+  │
+  ├── Logging
+  │   ├── log_format             = "text" | "json"
+  │   └── log_file / log_rotation / log_retention
+  │
+  ├── Models
+  │   ├── model_repo             = "mlx-community/whisper-large-v3-turbo"
+  │   ├── embedding_model_repo   = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
+  │   ├── embedding_max_tokens   = 8192   # 422 above this unless embedding_truncate
+  │   ├── embedding_truncate     = False
+  │   ├── embedding_max_batch    = 2048   # strings per request
+  │   └── embedding_batch_size   = 32     # strings per GPU forward pass
   │
   ├── Concurrency
   │   ├── max_queued_jobs: int           = 1     # requests allowed to wait for the GPU
   │   ├── queue_wait_seconds: float      = 15.0  # max wait before 503
-  │   └── transcribe_speed_factor: float = 8.0   # x real-time, drives Retry-After
+  │   ├── transcribe_speed_factor: float = 8.0   # x real-time, drives Retry-After
+  │   └── embed_tokens_per_second        = 2000  # drives Retry-After for embed jobs
   │
   ├── File Handling
-  │   ├── max_file_size_mb: int  = 500
-  │   ├── temp_dir: Path         = "./tmp"
+  │   ├── max_file_size_mb: int  = 1500
+  │   ├── temp_dir: Path         = "/tmp/whisperapy"
+  │   ├── temp_max_age_hours     = 6      # startup sweep of crash leftovers
+  │   ├── ffmpeg_timeout_seconds = 120  (+ ffmpeg_timeout_seconds_per_mb = 0.5)
+  │   ├── download_connect_timeout / download_read_timeout = 15 / 120
   │   └── allowed_extensions     = [mp4, mov, mkv, avi, webm,
   │                                  mp3, wav, m4a, ogg, flac, aac]
   │
-  └── model_config               # reads from .env file automatically
+  └── model_config               # .env, extra="ignore" (retired keys don't break boot)
 ```
 
 ### 4.2 `.env.example`
 
-```env
-APP_NAME=whisperapy-mac
-VERSION=1.0.0
-DEBUG=false
-HOST=0.0.0.0
-PORT=8000
-
-MODEL_REPO=mlx-community/whisper-large-v3-turbo
-DEFAULT_LANGUAGE=auto
-EMBEDDING_MODEL_REPO=mlx-community/Qwen3-Embedding-4B-4bit-DWQ
-
-MAX_FILE_SIZE_MB=500
-TEMP_DIR=./tmp
-
-MAX_QUEUED_JOBS=1
-QUEUE_WAIT_SECONDS=15
-TRANSCRIBE_SPEED_FACTOR=8
-```
+The committed `.env.example` lists every setting above with its default, so an
+empty `.env` and the example file behave identically. `HOST` and `PORT` are not
+settings; `make dev` reads them from the shell environment.
 
 ### 4.3 `pyproject.toml` Structure
 
 ```toml
 [project]
 name = "whisperapy-mac"
-version = "1.0.0"
+version = "1.1.0"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi",
-  "uvicorn",
-  "mlx-whisper",
-  "mlx-embeddings",
-  "ffmpeg-python",
-  "python-multipart",
-  "pydantic-settings",
-  "loguru",
-]
+  "fastapi", "uvicorn", "mlx-whisper", "mlx-embeddings", "numpy",
+  "python-multipart", "pydantic", "pydantic-settings", "loguru", "httpx",
+]   # each with a lower bound; uv.lock pins exact versions
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "black", "ruff"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "pyright"]
 
 [build-system]
 requires = ["hatchling"]
 
-[tool.black]
-line-length = 88
-
 [tool.ruff]
 line-length = 88
-select = ["E", "F", "I"]    # pycodestyle, pyflakes, isort
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+
+[tool.pyright]
+include = ["app"]
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=90"
 
 [tool.ruff.isort]
 known-first-party = ["app"]
@@ -283,7 +287,7 @@ asyncio_mode = "auto"
 ```json
 {
   "status": "ok",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "model": "whisper-large-v3-turbo",
   "model_loaded": true,
   "embedding_model": "Qwen3-Embedding-4B-4bit-DWQ",
@@ -299,18 +303,24 @@ asyncio_mode = "auto"
 ```
 
 `/health` always answers immediately, even mid-transcription, because no model
-work runs on the event loop (see §6.4). `estimated_wait_seconds` is `null` when
-idle or when the running job's length is unknown (embeddings).
+work runs on the event loop (see §6.4). It returns **503** with
+`"status": "starting"` until both models are loaded, so monitors can tell
+booting from broken. `estimated_wait_seconds` is `null` when idle. Health
+routes are mounted outside the v1 router and are never behind the API key.
 
 ### 5.2 Transcription Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/transcribe` | Sync — upload file, wait, receive transcript |
-| `POST` | `/api/v1/transcribe/url` | Sync — pass a URL, download + transcribe |
-| `POST` | `/api/v1/transcribe/jobs` | Async — upload file, receive `job_id` immediately |
-| `GET` | `/api/v1/transcribe/jobs/{job_id}` | Poll job status and retrieve result |
-| `DELETE` | `/api/v1/transcribe/jobs/{job_id}` | Cancel job and clean up temp files |
+| `POST` | `/api/v1/transcribe` | Upload file (multipart), wait, receive transcript |
+| `POST` | `/api/v1/transcribe/url` | JSON body with a public URL; busy check runs *before* download |
+| `POST` | `/api/v1/audio/transcriptions` | OpenAI-compatible multipart shape (`file`, `model`, `language`, `prompt`, `response_format`, `temperature`, `timestamp_granularities[]`) |
+| `GET` | `/api/v1/models` | OpenAI-compatible model list |
+
+All three transcription routes share one pipeline (`_transcribe_source` in
+`api/v1/transcribe.py`); they differ only in how the input file is obtained and
+how form fields map onto `TranscribeParams`. There are no async job routes:
+requests are synchronous and `JobStatus` was removed.
 
 ### 5.3 Embedding Endpoint
 
@@ -321,8 +331,14 @@ idle or when the running job's length is unknown (embeddings).
 **Request** (`application/json`):
 
 ```json
-{ "input": ["hello world", "goodbye"] }
+{ "input": ["hello world", "goodbye"], "encoding_format": "float", "dimensions": 1024, "prompt": null }
 ```
+
+`input` may hold up to `EMBEDDING_MAX_BATCH` strings; any string over
+`EMBEDDING_MAX_TOKENS` tokens is a **422** (`InputTooLongError`) unless
+`EMBEDDING_TRUNCATE=true`, in which case it is cut and counted in the response's
+`truncated` field. `encoding_format=base64` returns little-endian float32 as
+OpenAI does; `dimensions` applies Matryoshka truncation with re-normalisation.
 
 **`EmbeddingResponse`** — OpenAI-compatible envelope:
 
@@ -333,24 +349,31 @@ idle or when the running job's length is unknown (embeddings).
     { "object": "embedding", "index": 0, "embedding": [0.01, -0.02] }
   ],
   "model": "mlx-community/Qwen3-Embedding-4B-4bit-DWQ",
-  "usage": { "prompt_tokens": 6, "total_tokens": 6 }
+  "usage": { "prompt_tokens": 6, "total_tokens": 6 },
+  "truncated": 0
 }
 ```
 
 The model runs last-token pooling and returns L2-normalized vectors. An optional
 `prompt` field prepends a Qwen3 instruction to each input (useful for query-side
-retrieval embeddings) while staying OpenAI-compatible when omitted.
+retrieval embeddings) while staying OpenAI-compatible when omitted. `usage`
+counts the tokens actually embedded (after any truncation). Inputs are sent to
+the GPU in chunks of `EMBEDDING_BATCH_SIZE`.
 
 ### 5.4 Transcription Request Schema
 
-All transcription requests use `multipart/form-data`:
+`TranscribeParams` (form fields on the upload route, JSON fields on the URL route):
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `file` | UploadFile | Yes | — | Video or audio file |
-| `language` | str | No | `auto` | Language code (e.g. `en`, `zh`) |
-| `word_timestamps` | bool | No | `false` | Include word-level timestamps |
-| `output_format` | enum | No | `json` | `json` \| `text` \| `srt` \| `vtt` |
+| `file` / `url` | UploadFile / HttpUrl | Yes | — | Media file, or a public http(s) URL |
+| `language` | str | No | `auto` | Language code (e.g. `en`, `zh`) or `auto` |
+| `include_segments` | bool | No | `false` | Include segment timings in JSON output |
+| `word_timestamps` | bool | No | `false` | Populate `segments[].words` |
+| `initial_prompt` | str | No | — | Vocabulary / context hint for the first window |
+| `temperature` | float 0–1 | No | Whisper fallback ladder | Fix a single decoding temperature |
+| `condition_on_previous_text` | bool | No | `true` | Feed prior text as context |
+| `output_format` | enum | No | `json` | `json` \| `verbose_json` \| `text` \| `srt` \| `vtt` |
 
 ### 5.5 Response Schemas
 
@@ -359,33 +382,22 @@ All transcription requests use `multipart/form-data`:
 ```json
 {
   "job_id": "abc-123",
-  "status": "completed",
   "language_detected": "en",
   "duration_seconds": 124.5,
   "processing_time_seconds": 8.2,
   "text": "Full transcript here...",
   "segments": [
-    { "start": 0.0, "end": 3.2, "text": "Hello world" },
-    { "start": 3.2, "end": 6.1, "text": "How are you?" }
+    { "start": 0.0, "end": 3.2, "text": "Hello world",
+      "words": [ { "start": 0.0, "end": 0.4, "word": " Hello", "probability": 0.98 } ] },
+    { "start": 3.2, "end": 6.1, "text": "How are you?", "words": [] }
   ]
 }
 ```
 
-**`JobStatusResponse`**
-
-```json
-{
-  "job_id": "abc-123",
-  "status": "processing",
-  "progress": 0.65,
-  "error": null,
-  "result": null
-}
-```
-
-Status values: `pending` | `processing` | `completed` | `failed`
-
-> **Note:** Async job state is stored in-memory only. Jobs are lost on server restart. This is acceptable for v1 as a local service.
+`duration_seconds` is exact (length of the decoded audio), not the end of the
+last segment. `words` is populated only when `word_timestamps=true`. With
+`output_format=text|srt|vtt` the body is rendered by `utils/formats.py` and the
+`Content-Type` is `text/plain`, `application/x-subrip`, or `text/vtt`.
 
 ### 5.6 Error Response Shape
 
@@ -393,7 +405,7 @@ All errors return a consistent JSON envelope — stack traces are never exposed 
 
 ```json
 {
-  "error": "UnsupportedFormat",
+  "error": "UnsupportedFormatError",
   "message": "File type .xyz is not supported",
   "request_id": "abc-123"
 }
@@ -422,21 +434,27 @@ Client uploads file (multipart/form-data)
           ↓
 Middleware: inject Request ID (UUID), start timer
           ↓
+security.py: require_api_key (401) when API_KEY is set
+          ↓
 gate.py: JobGate.reserve() — 503 immediately if the pipeline is full or the
          running job will outlast QUEUE_WAIT_SECONDS (for /transcribe/url this
-         happens *before* the download)
+         happens *before* the download; an upload has already been received)
           ↓
-file_handler.py: validate extension + magic bytes + file size
+file_handler.py: extension + 16-byte magic peek + declared size, then stream
+                 the upload to TEMP_DIR in 1 MB chunks under the size cap
+                 (URL route: scheme + public-host check, streamed download)
           ↓
-media.py: ffmpeg extract audio → 16kHz mono WAV → tmp/   (asyncio.to_thread)
+media.py: ffmpeg → 16kHz mono WAV, then load WAV → float32 numpy array
+          (asyncio.to_thread; one decode, exact duration)
           ↓
-gate.py: JobGate.run() — wait ≤ QUEUE_WAIT_SECONDS for the GPU slot, else 503
+gate.py: JobGate.run(estimated_seconds = duration / TRANSCRIBE_SPEED_FACTOR)
+         — wait ≤ QUEUE_WAIT_SECONDS for the GPU slot, else 503
           ↓
-mlx_worker.py: run transcriber.transcribe() on the dedicated MLX thread
+mlx_worker.py: transcriber.transcribe(samples, options) on the MLX thread
           ↓
-Schema mapping: raw output → TranscribeResponse
+file_handler.py: cleanup tmp files (always, in a finally)
           ↓
-file_handler.py: cleanup tmp files
+render(): json / verbose_json / text / srt / vtt
           ↓
 Return response + X-Request-ID + X-Processing-Time headers
 ```
@@ -447,9 +465,9 @@ The FastAPI lifespan context manager handles model loading and cleanup.
 
 | Event | Action |
 |---|---|
-| Startup | Create `tmp/`, create the `MlxWorker` thread, load mlx-whisper and the embedding model **on that thread** |
+| Startup | Create `TEMP_DIR`, sweep files older than `TEMP_MAX_AGE_HOURS`, create the `MlxWorker` thread, load mlx-whisper (warm-up on one second of silence) and the embedding model **on that thread**. A load failure aborts startup. |
 | Ready | Models are singletons — all requests share one loaded instance, no per-request cost |
-| Shutdown | Flush Loguru logs, shut down the MLX worker thread |
+| Shutdown | Shut down the MLX worker thread |
 
 > **Performance Note:** Without lifespan management, every first request pays a ~3 second model load cost. With singleton loading at startup, all requests hit the already-warm model.
 
@@ -461,8 +479,9 @@ process aborts with `There is no Stream(gpu, N) in current thread`. Therefore
 `MlxWorker` (`core/mlx_worker.py`) owns a single `ThreadPoolExecutor(max_workers=1)`
 and *every* MLX call — both `load()`s at startup and every `transcribe()` /
 `embed()` — runs on it via `await worker.run(fn, ...)`. Nothing MLX-related ever
-runs on the event loop or in `asyncio.to_thread`. ffmpeg is a plain subprocess and
-does use `asyncio.to_thread`.
+runs on the event loop or in `asyncio.to_thread`. ffmpeg, WAV loading, and the
+CPU tokenizer (`embedder.count_tokens`) are not MLX and use `asyncio.to_thread`,
+so token counting never queues behind a job that holds the GPU.
 
 **One GPU job at a time.** `JobGate` (`core/gate.py`) is the admission layer:
 
@@ -474,9 +493,11 @@ does use `asyncio.to_thread`.
 | GPU busy and `MAX_QUEUED_JOBS` already waiting | **503 immediately** |
 | Queued request still waiting after `QUEUE_WAIT_SECONDS` | **503** |
 
-The estimate is `wav_seconds / TRANSCRIBE_SPEED_FACTOR + 2s` minus elapsed
-time, where `wav_seconds` comes from the extracted 16 kHz mono WAV's size.
-Transcription and embedding requests share the same gate. Every 503 carries a
+Every job carries an `estimated_seconds`: `audio_seconds / TRANSCRIBE_SPEED_FACTOR`
+for transcription (exact length of the decoded audio) and
+`tokens / EMBED_TOKENS_PER_SECOND` for embeddings. The remaining time is that
+estimate plus 2 s overhead minus elapsed. Transcription and embedding requests
+share the same gate. Every 503 carries a
 `Retry-After` header (minimum 5 s). A client that disconnects does not cancel
 the running job — mlx-whisper cannot be interrupted.
 
@@ -497,22 +518,28 @@ ffmpeg handles all conversion — any input is extracted to a 16kHz mono WAV bef
 
 Loguru is configured for structured logging with per-request context.
 
-- Request ID attached to every log line for end-to-end tracing
-- Stdout in development (human-readable), file sink in production
-- Log levels: `DEBUG` locally, `INFO` in production — controlled via `.env`
-- Every transcription logs: filename, size, language, model, processing time
+- Request ID attached to every log line for end-to-end tracing (bound by the middleware via `logger.contextualize`)
+- Stdout sink always; optional rotating file sink via `LOG_FILE` / `LOG_ROTATION` / `LOG_RETENTION`
+- `LOG_FORMAT=json` switches both sinks to loguru's serialized JSON
+- uvicorn and httpx stdlib loggers are intercepted so every line shares one format
+- Log levels: `DEBUG` when `DEBUG=true`, else `INFO`
+- Every transcription logs: source, language, duration, processing time
 
 ### 7.2 Exception Hierarchy (`core/exceptions.py`)
 
 ```
-WhisperapyError (base)
-  ├── FileTooLargeError        # file exceeds MAX_FILE_SIZE_MB
-  ├── UnsupportedFormatError   # extension or magic bytes not allowed
-  ├── FileValidationError      # malformed upload
-  ├── AudioExtractionError     # ffmpeg failed
-  ├── TranscriptionError       # mlx-whisper failed
-  ├── DownloadError            # file download from URL failed
-  ├── EmbeddingError           # mlx-embeddings failed
+WhisperapyError (base; each subclass declares status_code + default_message)
+  ├── AuthenticationError      # missing / wrong API key               → 401
+  ├── FileTooLargeError        # file exceeds MAX_FILE_SIZE_MB         → 413
+  ├── UnsupportedFormatError   # extension or magic bytes not allowed  → 415
+  ├── FileValidationError      # malformed upload                      → 422
+  ├── DownloadError            # file download from URL failed         → 422
+  ├── ForbiddenUrlError        # non-http scheme or non-public host    → 422
+  ├── InvalidRequestError      # violates a configured limit (batch)   → 422
+  ├── InputTooLongError        # embedding input > EMBEDDING_MAX_TOKENS→ 422
+  ├── AudioExtractionError     # ffmpeg failed                         → 500
+  ├── TranscriptionError       # mlx-whisper failed                    → 500
+  ├── EmbeddingError           # mlx-embeddings failed                 → 500
   ├── ModelNotReadyError       # model not yet loaded at startup       → 503
   └── ServiceBusyError         # GPU busy; carries retry_after         → 503 + Retry-After
 ```
@@ -521,19 +548,24 @@ WhisperapyError (base)
 
 | Middleware | Function |
 |---|---|
-| `RequestIDMiddleware` | Injects UUID into each request, adds `X-Request-ID` to response |
-| `TimingMiddleware` | Measures total request duration, adds `X-Processing-Time` to response |
-| `CORSMiddleware` | Explicit allowed origins — no wildcard in production |
+| `RequestContextMiddleware` | Pure ASGI (no `BaseHTTPMiddleware`). Honours an incoming `X-Request-ID` or generates a UUID, adds `X-Request-ID` and `X-Processing-Time` to the response, binds the id into loguru's context |
+| `CORSMiddleware` | Added only when `CORS_ORIGINS` is non-empty — explicit origins, never a wildcard |
+
+The unhandled-exception handler runs in Starlette's outermost
+`ServerErrorMiddleware`, outside ours, so it sets `X-Request-ID` itself.
 
 ### 7.4 Security & Validation
 
 | Concern | Approach |
 |---|---|
-| File type spoofing | Validate magic bytes (file header), not just extension |
-| Path traversal | Sanitize filename with `pathlib` before saving to `tmp/` |
-| File size | Reject before reading body — checked via `Content-Length` header |
+| Unauthenticated GPU use | Optional `API_KEY`; `require_api_key` dependency on the v1 router (bearer or `X-API-Key`, constant-time compare). Health stays open |
+| SSRF via `/transcribe/url` | `HttpUrl` typing, http/https only, host resolved and refused if loopback / private / link-local / reserved, re-checked on every redirect via an httpx response hook. `ALLOW_PRIVATE_URLS` opts out |
+| File type spoofing | 16-byte magic peek; RIFF containers check the form type so `.avi` renamed `.wav` fails |
+| Memory exhaustion | Uploads stream to disk in 1 MB chunks under the size cap; nothing holds a whole file in RAM |
+| Path traversal | Sanitize filename, `tempfile.mkstemp` in `TEMP_DIR` |
+| File size | `UploadFile.size` pre-check, then a running byte count while streaming |
 | Stack trace leaks | Global error handler catches all exceptions, returns clean JSON |
-| CORS | Explicit allowed origins configured via settings (default: `localhost` only) |
+| CORS | Off unless `CORS_ORIGINS` lists explicit origins |
 
 ---
 
@@ -544,16 +576,18 @@ WhisperapyError (base)
 - Singleton pattern — one model instance for the lifetime of the process
 - Loaded during FastAPI lifespan startup, injected via `dependencies.py`
 - Wraps mlx-whisper with a consistent input/output interface
-- Handles language detection vs explicit language parameter
+- Takes decoded audio as a numpy array (never a path, which would make mlx-whisper decode again)
+- `TranscribeOptions` carries language, word timestamps, initial prompt, temperature, condition_on_previous_text
 - Maps raw mlx-whisper output to `TranscribeResponse` schema
 
 ```
 TranscriberService
-  ├── load()            # called at startup, loads model from HuggingFace cache
+  ├── load()            # startup: transcribes 1 s of zeros → downloads, caches, compiles kernels;
+  │                     # exceptions propagate so a broken model aborts startup
   ├── transcribe(
-  │     audio_path,
-  │     language,
-  │     word_timestamps
+  │     audio: np.ndarray,
+  │     duration_seconds: float | None,
+  │     options: TranscribeOptions | None
   │   ) -> TranscribeResponse
   └── is_ready()        # returns bool for health endpoint
 ```
@@ -563,22 +597,27 @@ TranscriberService
 - Singleton pattern — one embedding model instance loaded at startup, mirroring `TranscriberService`
 - Wraps `mlx-embeddings` (`load` / `generate`) with a consistent interface
 - Imports `mlx_embeddings` inside methods so non-Apple / CI machines can import the module
-- Returns L2-normalized vectors (last-token pooling) plus a best-effort token count for `usage`
+- Returns L2-normalized vectors (last-token pooling) plus the token count actually embedded
+- Enforces `EMBEDDING_MAX_TOKENS` (422, or truncate + flag), passes `max_length` to `generate`, chunks by `EMBEDDING_BATCH_SIZE`, applies Matryoshka `dimensions`
 
 ```
 EmbedderService
-  ├── load()            # called at startup, loads model + tokenizer
+  ├── load()                       # called at startup, loads model + tokenizer
+  ├── count_tokens(texts) -> list[int]   # CPU tokenizer; safe off the MLX thread
+  ├── check_lengths(counts) -> int       # raises InputTooLongError or returns truncated count
   ├── embed(
   │     texts: list[str],
-  │     prompt: str | None
-  │   ) -> tuple[list[list[float]], int]   # (vectors, prompt_tokens)
-  └── is_ready()        # returns bool for health endpoint
+  │     prompt: str | None,
+  │     dimensions: int | None
+  │   ) -> EmbedResult(vectors, prompt_tokens, truncated)
+  └── is_ready()
 ```
 
 ### 8.2a `JobGate` (`core/gate.py`) and `MlxWorker` (`core/mlx_worker.py`)
 
 - `JobGate.reserve(kind)` — async context manager claimed for the whole request; fails fast with `ServiceBusyError`
-- `JobGate.run(job, audio_seconds)` — async context manager holding the single GPU slot for the model call
+- `JobGate.run(job, estimated_seconds)` — async context manager holding the single GPU slot for the model call
+- `JobGate.estimate_transcribe(audio_seconds)` / `estimate_embed(tokens)` — turn work size into seconds for the estimate
 - `JobGate.snapshot()` — the busy fields merged into `/health`
 - `MlxWorker.run(fn, *args, **kwargs)` — awaitable; executes `fn` on the one MLX thread
 - `MlxWorker.run_sync(fn, ...)` — blocking variant for non-async callers
@@ -586,25 +625,26 @@ EmbedderService
 
 ### 8.3 `MediaService` (`services/media.py`)
 
-- Wraps `ffmpeg-python` to extract audio from any input format
-- Output: 16kHz mono WAV (optimal for Whisper)
-- Uses `tmp/` for intermediate files
-- Raises `AudioExtractionError` on ffmpeg failure with a clean message
+- Runs the `ffmpeg` CLI via `subprocess` (`-nostdin`, timeout = `FFMPEG_TIMEOUT_SECONDS` + per-MB allowance)
+- Output: 16kHz mono 16-bit WAV, then loaded with the stdlib `wave` module into a float32 numpy array
+- One decode per request: the array goes straight to mlx-whisper, which would otherwise spawn ffmpeg again
+- Raises `AudioExtractionError` on failure, timeout, or missing ffmpeg with a clean message
 
 ```
-MediaService
-  └── extract_audio(
-        input_path: Path,
-        output_path: Path
-      ) -> Path          # returns path to extracted WAV
+MediaService(settings)
+  ├── extract_audio(input_path, output_path) -> Path
+  └── extract_and_load(input_path, output_path) -> DecodedAudio(samples, sample_rate)
+load_wav(path) -> DecodedAudio          # .duration_seconds is exact
 ```
 
 ### 8.4 `FileHandler` (`utils/file_handler.py`)
 
 | Function | Responsibility |
 |---|---|
-| `validate_upload()` | Check extension, magic bytes, and file size limit |
-| `save_temp_file()` | Save upload to `tmp/` with sanitized filename |
+| `validate_upload()` | Extension whitelist, declared-size check, 16-byte magic peek (`validate_magic_bytes`) |
+| `save_temp_file()` | Stream the upload to `TEMP_DIR` in 1 MB chunks under the size cap; unique name via `mkstemp` |
+| `download_file_from_url()` | `check_url_allowed` (scheme + public host, re-checked on redirects), streamed download under the size cap |
+| `sweep_temp_dir()` | Startup removal of files older than `TEMP_MAX_AGE_HOURS` |
 | `cleanup_temp()` | Remove temp files after transcription completes or fails |
 | `sanitize_filename()` | Strip path separators, normalize characters |
 
@@ -616,25 +656,32 @@ MediaService
 
 | Type | File | What it Tests |
 |---|---|---|
-| Unit | `test_config.py` | Settings load from env, defaults, validation |
-| Unit | `test_file_handler.py` | Magic byte checks, size limits, path sanitization |
-| Unit | `test_transcriber.py` | Transcriber with mocked mlx-whisper |
-| Unit | `test_embedder.py` | Embedder with mocked mlx-embeddings |
-| Unit | `test_gate.py` | Admission: queueing, fail-fast, timeouts, Retry-After estimates |
+| Unit | `test_config.py` | Defaults, env parsing, retired keys ignored, version from metadata, timeout scaling |
+| Unit | `test_file_handler.py` | Magic bytes per format, streamed save + size cap, temp sweep, SSRF guard incl. redirects, downloads |
+| Unit | `test_transcriber.py` | Real warm-up, load failure propagation, options mapping, word timestamps |
+| Unit | `test_embedder.py` | Token limit / truncation policy, batching, `max_length`, dimensions, usage |
+| Unit | `test_gate.py` | Admission: queueing, fail-fast, timeouts, transcribe + embed estimates |
 | Unit | `test_mlx_worker.py` | All calls land on the one MLX thread, off the event loop |
-| Unit | `test_media.py` | WAV duration estimate from file size |
-| Integration | `test_health.py` | Health endpoints return correct status and busy fields |
-| Integration | `test_transcribe.py` | Full upload and URL transcription flows |
-| Integration | `test_embeddings.py` | OpenAI-shaped embeddings responses |
-| Integration | `test_busy.py` | Concurrent requests: health stays responsive, 503 + Retry-After, queued request succeeds |
-| Integration | `test_lifespan.py` | Startup loads both models on the MLX worker thread |
+| Unit | `test_media.py` | `load_wav`, ffmpeg command + scaled timeout, failure modes, single decode |
+| Unit | `test_formats.py` | SRT / VTT rendering |
+| Unit | `test_logging.py` | Text/JSON sinks, rotating file, stdlib interception |
+| Unit | `test_middleware.py`, `test_dependencies.py` | ASGI passthrough + headers; lazy singletons |
+| Integration | `test_health.py` | Ready vs `starting` (503), model endpoint, CORS wiring, health open without key |
+| Integration | `test_transcribe.py` | Upload / URL / OpenAI routes, every output format, options plumbing, temp cleanup |
+| Integration | `test_embeddings.py` | OpenAI shape, base64, dimensions, batch + length limits, `/models` |
+| Integration | `test_auth.py` | 401 without / with wrong key; bearer and `X-API-Key` accepted |
+| Integration | `test_errors.py` | Every domain error → status + envelope, `Retry-After`, 500 without details, request-id echo |
+| Integration | `test_busy.py` | Concurrent requests: health stays responsive, 503 + Retry-After, embed estimates |
+| Integration | `test_lifespan.py` | Models load on the MLX thread; load failure aborts; temp sweep |
+
+200 tests, ~2 s, 99% line coverage; the gate in `pyproject.toml` is 90%.
 
 ### 9.2 Tools
 
-- `pytest` — test runner
+- `pytest` + `pytest-cov` — test runner with a coverage gate
 - `pytest-asyncio` (`asyncio_mode = "auto"`) — async test support
-- `httpx` `AsyncClient` — async HTTP client for FastAPI test client
-- `conftest.py` — shared fixtures: test client, mock model, sample audio files
+- `httpx` `AsyncClient` over `ASGITransport(raise_app_exceptions=False)` — so the app's own 500 handler is tested
+- `conftest.py` — `make_client(**settings_overrides)` builds an app with mocked transcriber / media / embedder, a fresh `JobGate`, and `dependency_overrides[get_settings]`; MLX modules are mocked via `sys.modules`
 
 ---
 
@@ -642,12 +689,13 @@ MediaService
 
 | Command | Action |
 |---|---|
-| `make dev` | `uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` |
-| `make test` | `uv run pytest tests/ -v` |
-| `make lint` | `uv run ruff check .` |
-| `make format` | `uv run black .` |
-| `make check` | Run lint + format + test in sequence |
-| `make clean` | Delete `tmp/` contents and `__pycache__` directories |
+| `make dev` | `uv run uvicorn app.main:app --reload --host $(HOST) --port $(PORT)` |
+| `make test` | `uv run pytest` (coverage gate 90%) |
+| `make lint` | `uv run ruff check .` + `uv run ruff format --check .` |
+| `make format` | `uv run ruff check --fix .` + `uv run ruff format .` |
+| `make typecheck` | `uv run pyright` |
+| `make check` | lint + typecheck + test — also what CI runs |
+| `make clean` | Delete `$(TEMP_DIR)` contents and tool caches |
 | `make install` | `uv sync` — install all dependencies |
 | `make install-dev` | `uv sync --extra dev` — include dev dependencies |
 
@@ -669,14 +717,16 @@ MediaService
 | Request ID middleware | `core/middleware.py` | 🟡 Important |
 | Consistent error response shape | `core/exceptions.py` | 🟡 Important |
 | Makefile developer shortcuts | `Makefile` | 🟡 Important |
-| Black + Ruff in `pyproject.toml` | `pyproject.toml` | 🟡 Important |
+| Ruff + pyright + coverage gate in `pyproject.toml`, CI | `pyproject.toml`, `.github/workflows/ci.yml` | 🟡 Important |
+| Streaming uploads, single audio decode, real warm-up | `utils/file_handler.py`, `services/media.py`, `services/transcriber.py` | 🔴 Critical |
+| API key + SSRF guard when exposed beyond localhost | `core/security.py`, `utils/file_handler.py` | 🔴 Critical |
 
 ### Nice to Have (v2)
 
 | Item | Notes |
 |---|---|
 | Rate limiting | Not done. `API_KEY` auth landed in v1.1; add `slowapi` if a shared deployment needs per-client limits |
-| pytest test suite | **Done (v1.1)** — 180 tests, 90% coverage gate, CI on macOS |
+| pytest test suite | **Done (v1.1)** — 200 tests, 90% coverage gate, CI on macOS |
 | Speaker diarization | Identify different speakers in audio |
 | WebSocket streaming | Real-time transcription as audio is processed |
 | Batch processing endpoint | Accept multiple files in one request |
@@ -688,7 +738,7 @@ MediaService
 
 Build in this order to ensure each layer has its dependencies in place:
 
-1. `pyproject.toml` — foundation, dependencies, Black/Ruff config
+1. `pyproject.toml` — foundation, dependencies, ruff / pyright / pytest config
 2. `config.py` — Pydantic BaseSettings, all other modules depend on this
 3. `core/` — logging, exceptions, error handlers, middleware
 4. `main.py` — FastAPI app init, lifespan, router registration
@@ -700,4 +750,4 @@ Build in this order to ensure each layer has its dependencies in place:
 
 ---
 
-*whisperapy-mac — Design Document v1.0*
+*whisperapy-mac — Design Document v1.1*
