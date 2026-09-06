@@ -116,3 +116,31 @@ def test_extract_and_load_decodes_once(media, tmp_path):
         audio = media.extract_and_load(src, out)
     assert run.call_count == 1
     assert audio.duration_seconds == 1.0
+
+
+def test_load_wav_rejects_stereo(tmp_path):
+    stereo = tmp_path / "s.wav"
+    with wave.open(str(stereo), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(b"\x00" * 64)
+    with pytest.raises(AudioExtractionError, match="16-bit mono"):
+        load_wav(stereo)
+
+
+def test_extract_audio_missing_input_uses_timeout_floor(media, tmp_path):
+    ok = MagicMock(returncode=0, stderr="")
+    with patch("app.services.media.subprocess.run", return_value=ok) as run:
+        media.extract_audio(tmp_path / "missing.mp4", tmp_path / "out.wav")
+    assert run.call_args[1]["timeout"] == 10  # floor only, size unknown
+
+
+def test_extract_audio_generic_oserror(media, tmp_path):
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"x")
+    with (
+        patch("app.services.media.subprocess.run", side_effect=PermissionError("no")),
+        pytest.raises(AudioExtractionError, match="Audio extraction failed"),
+    ):
+        media.extract_audio(src, tmp_path / "out.wav")

@@ -73,3 +73,11 @@ def test_ffmpeg_timeout_scales_with_input_size():
 def test_max_file_size_bytes():
     settings = Settings(max_file_size_mb=2, _env_file=None)
     assert settings.max_file_size_bytes == 2 * 1024 * 1024
+
+
+def test_version_falls_back_when_package_not_installed():
+    from importlib.metadata import PackageNotFoundError
+    from unittest.mock import patch
+
+    with patch("app.config._pkg_version", side_effect=PackageNotFoundError):
+        assert Settings(_env_file=None).version == "0.0.0+local"

@@ -338,3 +338,66 @@ async def test_download_transport_error(test_settings, public_dns):
         pytest.raises(DownloadError, match="refused"),
     ):
         await download_file_from_url("http://example.com/x", test_settings)
+
+
+# ------------------------------------------------- less common branches
+
+
+def test_check_url_without_host(test_settings):
+    with pytest.raises(ForbiddenUrlError, match="no host"):
+        check_url_allowed("http:///no-host", test_settings)
+
+
+def test_cleanup_temp_logs_and_continues_on_oserror(tmp_path):
+    f = tmp_path / "locked.wav"
+    f.write_text("x")
+    with patch("pathlib.Path.unlink", side_effect=OSError("busy")):
+        cleanup_temp(f)  # must not raise
+    assert f.exists()
+
+
+def test_sweep_temp_dir_tolerates_oserror(test_settings):
+    test_settings.temp_dir.mkdir(parents=True)
+    test_settings.temp_max_age_hours = 0
+    (test_settings.temp_dir / "a.wav").write_bytes(b"x")
+    with patch("pathlib.Path.unlink", side_effect=OSError("busy")):
+        assert sweep_temp_dir(test_settings) == 0
+
+
+async def test_download_redirect_to_private_host_is_refused(test_settings):
+    """The SSRF check runs again on every redirect target."""
+    import httpx
+
+    def by_host(host, *args, **kwargs):
+        return addrinfo("10.0.0.9" if host == "internal" else "93.184.216.34")
+
+    class RedirectingClient(FakeClient):
+        def __init__(self, response, **kwargs):
+            super().__init__(response)
+            self.hooks = kwargs.get("event_hooks", {})
+
+        def stream(self, method, url):
+            hop = httpx.Response(302, request=httpx.Request("GET", url))
+            hop.next_request = httpx.Request("GET", "http://internal/secret.mp3")
+
+            class Ctx:
+                async def __aenter__(_self):
+                    for hook in self.hooks.get("response", []):
+                        await hook(hop)
+                    return self._response
+
+                async def __aexit__(_self, *a):
+                    pass
+
+            return Ctx()
+
+    with (
+        patch("app.utils.file_handler.socket.getaddrinfo", side_effect=by_host),
+        patch(
+            "app.utils.file_handler.httpx.AsyncClient",
+            side_effect=lambda **kw: RedirectingClient(FakeResponse(), **kw),
+        ),
+        pytest.raises(ForbiddenUrlError, match="internal"),
+    ):
+        await download_file_from_url("http://example.com/x.mp3", test_settings)
+    assert list(test_settings.temp_dir.iterdir()) == []

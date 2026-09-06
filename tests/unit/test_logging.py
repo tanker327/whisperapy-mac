@@ -46,3 +46,9 @@ def test_debug_flag_controls_level(capsys):
     logger.info("shown")
     out = capsys.readouterr().out
     assert "hidden" not in out and "shown" in out
+
+
+def test_intercept_handles_unknown_level_names(capsys):
+    setup_logging(Settings(debug=True, _env_file=None))
+    logging.getLogger("custom").log(35, "custom level")  # no loguru name for 35
+    assert "custom level" in capsys.readouterr().out

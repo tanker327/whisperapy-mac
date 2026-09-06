@@ -53,3 +53,18 @@ async def test_health_is_open_when_api_key_is_set(make_client):
     async with make_client(api_key="secret") as env:
         assert (await env.client.get("/health")).status_code == 200
         assert (await env.client.get("/health/model")).status_code == 200
+
+
+async def test_cors_enabled_only_when_origins_configured(make_client):
+    async with make_client(cors_origins=["http://app.local"]) as env:
+        r = await env.client.options(
+            "/api/v1/models",
+            headers={
+                "Origin": "http://app.local",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert r.headers.get("access-control-allow-origin") == "http://app.local"
+    async with make_client() as env:
+        r = await env.client.get("/api/v1/models", headers={"Origin": "http://x"})
+        assert "access-control-allow-origin" not in r.headers
