@@ -11,6 +11,7 @@ event loop stays free to serve health checks and reject busy requests.
 """
 
 import asyncio
+import contextvars
 import functools
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -24,10 +25,16 @@ class MlxWorker:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mlx")
 
     async def run(self, fn: Callable[..., T], *args, **kwargs) -> T:
-        """Run ``fn`` on the MLX thread without blocking the event loop."""
+        """Run ``fn`` on the MLX thread without blocking the event loop.
+
+        The caller's context (loguru's ``request_id`` lives in a contextvar)
+        is copied onto the worker thread so log lines emitted from inside the
+        model call carry the same request id as the rest of the request.
+        """
         loop = asyncio.get_running_loop()
+        ctx = contextvars.copy_context()
         return await loop.run_in_executor(
-            self._executor, functools.partial(fn, *args, **kwargs)
+            self._executor, functools.partial(ctx.run, fn, *args, **kwargs)
         )
 
     def run_sync(self, fn: Callable[..., T], *args, **kwargs) -> T:
