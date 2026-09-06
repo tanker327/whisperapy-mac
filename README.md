@@ -138,3 +138,35 @@ All settings are configured via environment variables or `.env` file. See [`.env
 | `EMBEDDING_MODEL_REPO` | `mlx-community/Qwen3-Embedding-4B-4bit-DWQ` | HuggingFace embedding model repo |
 | `MAX_FILE_SIZE_MB` | `500` | Maximum upload file size |
 | `TEMP_DIR` | `./tmp` | Directory for temporary files |
+| `MAX_QUEUED_JOBS` | `1` | Requests allowed to wait for the GPU; beyond this, 503 immediately |
+| `QUEUE_WAIT_SECONDS` | `15` | Max time a queued request waits before returning 503 |
+| `TRANSCRIBE_SPEED_FACTOR` | `8` | Assumed transcription speed vs. real time, used to estimate `Retry-After` |
+
+### Concurrency and busy responses
+
+The Metal GPU runs one model call at a time, so transcription and embedding
+requests share a single job slot. Both models are loaded on, and every model
+call runs on, one dedicated MLX thread (MLX keeps GPU streams per thread, so
+loading and inference must share a thread). ffmpeg runs in a regular worker
+thread. The event loop is never blocked, so `/health` and busy rejections
+respond instantly during a long transcription.
+
+When a request arrives while the GPU is busy:
+
+- If the running job is expected to finish within `QUEUE_WAIT_SECONDS`, the
+  request waits for the slot (at most `MAX_QUEUED_JOBS` may wait).
+- Otherwise it fails immediately with **HTTP 503**, a `Retry-After` header,
+  and a JSON body including `retry_after_seconds`. For URL requests this check
+  runs before the download starts.
+
+`GET /health` reports `busy`, `active_jobs`, `queued_jobs`, and
+`estimated_wait_seconds` so clients can decide when to retry.
+
+```json
+{
+  "error": "ServiceBusyError",
+  "message": "Server is busy processing another request. Please retry later.",
+  "request_id": "…",
+  "retry_after_seconds": 42
+}
+```

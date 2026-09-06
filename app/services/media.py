@@ -4,6 +4,19 @@ from loguru import logger
 
 from app.core.exceptions import AudioExtractionError
 
+# Output of extract_audio is 16kHz mono 16-bit PCM: 32000 bytes per second.
+_WAV_BYTES_PER_SECOND = 16000 * 2
+_WAV_HEADER_BYTES = 44
+
+
+def wav_duration_seconds(path: Path) -> float | None:
+    """Estimate duration of a 16kHz mono 16-bit WAV from its size."""
+    try:
+        payload = max(0, path.stat().st_size - _WAV_HEADER_BYTES)
+    except OSError:
+        return None
+    return payload / _WAV_BYTES_PER_SECOND
+
 
 class MediaService:
     """Wraps ffmpeg to extract audio from any input format."""

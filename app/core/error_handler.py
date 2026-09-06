@@ -15,14 +15,17 @@ def register_error_handlers(app: FastAPI) -> None:
         request_id = getattr(request.state, "request_id", "unknown")
         logger.warning(f"{type(exc).__name__}: {exc.message} | request_id={request_id}")
         status_code = _get_status_code(exc)
-        return JSONResponse(
-            status_code=status_code,
-            content={
-                "error": type(exc).__name__,
-                "message": exc.message,
-                "request_id": request_id,
-            },
-        )
+        content: dict = {
+            "error": type(exc).__name__,
+            "message": exc.message,
+            "request_id": request_id,
+        }
+        headers: dict[str, str] = {}
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            content["retry_after_seconds"] = retry_after
+            headers["Retry-After"] = str(retry_after)
+        return JSONResponse(status_code=status_code, content=content, headers=headers)
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -46,6 +49,7 @@ def _get_status_code(exc: WhisperapyError) -> int:
         FileTooLargeError,
         FileValidationError,
         ModelNotReadyError,
+        ServiceBusyError,
         TranscriptionError,
         UnsupportedFormatError,
     )
@@ -59,5 +63,6 @@ def _get_status_code(exc: WhisperapyError) -> int:
         TranscriptionError: 500,
         EmbeddingError: 500,
         ModelNotReadyError: 503,
+        ServiceBusyError: 503,
     }
     return status_map.get(type(exc), 500)

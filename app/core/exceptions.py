@@ -60,3 +60,17 @@ class ModelNotReadyError(WhisperapyError):
 
     def __init__(self, message: str = "Model is not ready"):
         super().__init__(message)
+
+
+class ServiceBusyError(WhisperapyError):
+    """All GPU job slots are taken; the client should retry later."""
+
+    def __init__(
+        self,
+        message: str = (
+            "Server is busy processing another request. Please retry later."
+        ),
+        retry_after: int = 30,
+    ):
+        self.retry_after = retry_after
+        super().__init__(message)

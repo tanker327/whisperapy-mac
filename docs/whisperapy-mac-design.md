@@ -102,13 +102,15 @@ whisperapy-mac/
 ├── app/
 │   ├── main.py                 # FastAPI app init, lifespan
 │   ├── config.py               # Pydantic BaseSettings — single source of truth
-│   ├── dependencies.py         # Shared FastAPI deps (get_settings, get_model)
+│   ├── dependencies.py         # Shared FastAPI deps (get_settings, get_transcriber, get_gate, ...)
 │   │
 │   ├── core/
 │   │   ├── logging.py          # Loguru structured logging setup
 │   │   ├── exceptions.py       # Custom exception classes
 │   │   ├── error_handler.py    # Global FastAPI exception handlers
-│   │   └── middleware.py       # Request ID injection, timing headers
+│   │   ├── middleware.py       # Request ID injection, timing headers
+│   │   ├── gate.py             # JobGate — one GPU job at a time, bounded queue, 503 + Retry-After
+│   │   └── mlx_worker.py       # MlxWorker — the single thread that loads models and runs inference
 │   │
 │   ├── api/
 │   │   └── v1/
@@ -164,6 +166,11 @@ Settings
   │   ├── default_language: str     = "auto"
   │   └── embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
   │
+  ├── Concurrency
+  │   ├── max_queued_jobs: int           = 1     # requests allowed to wait for the GPU
+  │   ├── queue_wait_seconds: float      = 15.0  # max wait before 503
+  │   └── transcribe_speed_factor: float = 8.0   # x real-time, drives Retry-After
+  │
   ├── File Handling
   │   ├── max_file_size_mb: int  = 500
   │   ├── temp_dir: Path         = "./tmp"
@@ -188,6 +195,10 @@ EMBEDDING_MODEL_REPO=mlx-community/Qwen3-Embedding-4B-4bit-DWQ
 
 MAX_FILE_SIZE_MB=500
 TEMP_DIR=./tmp
+
+MAX_QUEUED_JOBS=1
+QUEUE_WAIT_SECONDS=15
+TRANSCRIBE_SPEED_FACTOR=8
 ```
 
 ### 4.3 `pyproject.toml` Structure
@@ -236,7 +247,7 @@ asyncio_mode = "auto"
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | Server alive check + model status + uptime |
+| `GET` | `/health` | Server alive check + model status + uptime + GPU busy state |
 | `GET` | `/health/model` | Detailed model readiness and metadata |
 
 **`GET /health` — Response**
@@ -247,9 +258,21 @@ asyncio_mode = "auto"
   "version": "1.0.0",
   "model": "whisper-large-v3-turbo",
   "model_loaded": true,
-  "uptime_seconds": 3600
+  "embedding_model": "Qwen3-Embedding-4B-4bit-DWQ",
+  "embedding_model_loaded": true,
+  "uptime_seconds": 3600,
+  "busy": true,
+  "active_jobs": 1,
+  "queued_jobs": 0,
+  "max_concurrent_jobs": 1,
+  "max_queued_jobs": 1,
+  "estimated_wait_seconds": 149
 }
 ```
+
+`/health` always answers immediately, even mid-transcription, because no model
+work runs on the event loop (see §6.4). `estimated_wait_seconds` is `null` when
+idle or when the running job's length is unknown (embeddings).
 
 ### 5.2 Transcription Endpoints
 
@@ -348,6 +371,18 @@ All errors return a consistent JSON envelope — stack traces are never exposed 
 }
 ```
 
+**Busy (503)** — returned when the GPU is occupied and the request cannot be
+queued (see §6.4). Adds a `Retry-After` header and `retry_after_seconds`:
+
+```json
+{
+  "error": "ServiceBusyError",
+  "message": "Server is busy processing another request. Please retry later.",
+  "request_id": "abc-123",
+  "retry_after_seconds": 149
+}
+```
+
 ---
 
 ## 6. Processing Pipeline
@@ -359,11 +394,17 @@ Client uploads file (multipart/form-data)
           ↓
 Middleware: inject Request ID (UUID), start timer
           ↓
+gate.py: JobGate.reserve() — 503 immediately if the pipeline is full or the
+         running job will outlast QUEUE_WAIT_SECONDS (for /transcribe/url this
+         happens *before* the download)
+          ↓
 file_handler.py: validate extension + magic bytes + file size
           ↓
-media.py: ffmpeg extract audio → 16kHz mono WAV → tmp/
+media.py: ffmpeg extract audio → 16kHz mono WAV → tmp/   (asyncio.to_thread)
           ↓
-transcriber.py: mlx-whisper (singleton model, loaded at startup)
+gate.py: JobGate.run() — wait ≤ QUEUE_WAIT_SECONDS for the GPU slot, else 503
+          ↓
+mlx_worker.py: run transcriber.transcribe() on the dedicated MLX thread
           ↓
 Schema mapping: raw output → TranscribeResponse
           ↓
@@ -378,11 +419,38 @@ The FastAPI lifespan context manager handles model loading and cleanup.
 
 | Event | Action |
 |---|---|
-| Startup | Verify ffmpeg installed, create `tmp/`, load mlx-whisper model into memory |
-| Ready | Model is a singleton — all requests share one loaded instance, no per-request cost |
-| Shutdown | Flush Loguru logs, cancel any in-progress async jobs, free model memory |
+| Startup | Create `tmp/`, create the `MlxWorker` thread, load mlx-whisper and the embedding model **on that thread** |
+| Ready | Models are singletons — all requests share one loaded instance, no per-request cost |
+| Shutdown | Flush Loguru logs, shut down the MLX worker thread |
 
 > **Performance Note:** Without lifespan management, every first request pays a ~3 second model load cost. With singleton loading at startup, all requests hit the already-warm model.
+
+### 6.4 Threading & Concurrency
+
+**MLX thread affinity.** MLX (0.32+) keeps GPU streams per thread. A model that
+was loaded or warmed up on one thread cannot be evaluated from another; the
+process aborts with `There is no Stream(gpu, N) in current thread`. Therefore
+`MlxWorker` (`core/mlx_worker.py`) owns a single `ThreadPoolExecutor(max_workers=1)`
+and *every* MLX call — both `load()`s at startup and every `transcribe()` /
+`embed()` — runs on it via `await worker.run(fn, ...)`. Nothing MLX-related ever
+runs on the event loop or in `asyncio.to_thread`. ffmpeg is a plain subprocess and
+does use `asyncio.to_thread`.
+
+**One GPU job at a time.** `JobGate` (`core/gate.py`) is the admission layer:
+
+| Situation | Outcome |
+|---|---|
+| GPU idle | request runs immediately |
+| GPU busy, queue slot free, running job expected to finish within `QUEUE_WAIT_SECONDS` | request waits, then runs |
+| GPU busy, running job expected to take longer than `QUEUE_WAIT_SECONDS` | **503 immediately** (before any download) |
+| GPU busy and `MAX_QUEUED_JOBS` already waiting | **503 immediately** |
+| Queued request still waiting after `QUEUE_WAIT_SECONDS` | **503** |
+
+The estimate is `wav_seconds / TRANSCRIBE_SPEED_FACTOR + 2s` minus elapsed
+time, where `wav_seconds` comes from the extracted 16 kHz mono WAV's size.
+Transcription and embedding requests share the same gate. Every 503 carries a
+`Retry-After` header (minimum 5 s). A client that disconnects does not cancel
+the running job — mlx-whisper cannot be interrupted.
 
 ### 6.3 Supported Formats
 
@@ -417,7 +485,8 @@ WhisperapyError (base)
   ├── TranscriptionError       # mlx-whisper failed
   ├── DownloadError            # file download from URL failed
   ├── EmbeddingError           # mlx-embeddings failed
-  └── ModelNotReadyError       # model not yet loaded at startup
+  ├── ModelNotReadyError       # model not yet loaded at startup       → 503
+  └── ServiceBusyError         # GPU busy; carries retry_after         → 503 + Retry-After
 ```
 
 ### 7.3 Middleware (`core/middleware.py`)
@@ -478,6 +547,15 @@ EmbedderService
   └── is_ready()        # returns bool for health endpoint
 ```
 
+### 8.2a `JobGate` (`core/gate.py`) and `MlxWorker` (`core/mlx_worker.py`)
+
+- `JobGate.reserve(kind)` — async context manager claimed for the whole request; fails fast with `ServiceBusyError`
+- `JobGate.run(job, audio_seconds)` — async context manager holding the single GPU slot for the model call
+- `JobGate.snapshot()` — the busy fields merged into `/health`
+- `MlxWorker.run(fn, *args, **kwargs)` — awaitable; executes `fn` on the one MLX thread
+- `MlxWorker.run_sync(fn, ...)` — blocking variant for non-async callers
+- See §6.4 for why both exist.
+
 ### 8.3 `MediaService` (`services/media.py`)
 
 - Wraps `ffmpeg-python` to extract audio from any input format
@@ -513,8 +591,15 @@ MediaService
 | Unit | `test_config.py` | Settings load from env, defaults, validation |
 | Unit | `test_file_handler.py` | Magic byte checks, size limits, path sanitization |
 | Unit | `test_transcriber.py` | Transcriber with mocked mlx-whisper |
-| Integration | `test_health.py` | Health endpoints return correct status |
-| Integration | `test_transcribe.py` | Full sync and async transcription flows |
+| Unit | `test_embedder.py` | Embedder with mocked mlx-embeddings |
+| Unit | `test_gate.py` | Admission: queueing, fail-fast, timeouts, Retry-After estimates |
+| Unit | `test_mlx_worker.py` | All calls land on the one MLX thread, off the event loop |
+| Unit | `test_media.py` | WAV duration estimate from file size |
+| Integration | `test_health.py` | Health endpoints return correct status and busy fields |
+| Integration | `test_transcribe.py` | Full upload and URL transcription flows |
+| Integration | `test_embeddings.py` | OpenAI-shaped embeddings responses |
+| Integration | `test_busy.py` | Concurrent requests: health stays responsive, 503 + Retry-After, queued request succeeds |
+| Integration | `test_lifespan.py` | Startup loads both models on the MLX worker thread |
 
 ### 9.2 Tools
 
@@ -547,6 +632,8 @@ MediaService
 | Item | Location | Priority |
 |---|---|---|
 | Lifespan model loading (singleton) | `main.py` | 🔴 Critical |
+| All MLX calls on one dedicated thread | `core/mlx_worker.py` | 🔴 Critical |
+| GPU admission gate — fail fast with 503 + Retry-After | `core/gate.py` | 🔴 Critical |
 | Global exception handlers | `core/error_handler.py` | 🔴 Critical |
 | Magic byte file validation | `utils/file_handler.py` | 🔴 Critical |
 | Pydantic BaseSettings for all config | `config.py` | 🔴 Critical |

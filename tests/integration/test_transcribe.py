@@ -38,6 +38,7 @@ async def client(tmp_path):
     with (
         patch.object(deps, "_transcriber", mock_transcriber),
         patch.object(deps, "_media_service", mock_media),
+        patch.object(deps, "_gate", deps.build_gate(settings)),
         patch.object(deps, "get_settings", return_value=settings),
     ):
         app = create_app()

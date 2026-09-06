@@ -78,7 +78,8 @@ Update `/path/to/whisperapy-mac` and `/path/to/.local/bin/uv` to your actual pat
 # Start (first time, or after edits)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisperapy.mac.plist
 
-# Restart
+# Restart — check `curl localhost:8000/health` first: if "busy": true a
+# transcription is in flight and a restart will kill it (client gets no result).
 launchctl kickstart -k gui/$(id -u)/com.whisperapy.mac
 
 # Stop

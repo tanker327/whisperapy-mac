@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     default_language: str = "auto"
     embedding_model_repo: str = "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"
 
+    # Concurrency — the GPU runs exactly one model call at a time (MLX streams
+    # are per-thread; see app/core/mlx_worker.py). Extra requests wait briefly
+    # in a small queue, then fail fast with 503 + Retry-After.
+    max_queued_jobs: int = 1
+    queue_wait_seconds: float = 15.0
+    # Rough transcription speed as a multiple of real time; drives Retry-After.
+    transcribe_speed_factor: float = 8.0
+
     # File Handling
     max_file_size_mb: int = 1500
     temp_dir: Path = Path("/tmp/whisperapy")

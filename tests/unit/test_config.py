@@ -34,3 +34,10 @@ def test_temp_dir_is_path():
     """temp_dir should be a Path object."""
     settings = Settings(_env_file=None)
     assert isinstance(settings.temp_dir, Path)
+
+
+def test_concurrency_defaults():
+    settings = Settings(_env_file=None)
+    assert settings.max_queued_jobs == 1
+    assert settings.queue_wait_seconds == 15.0
+    assert settings.transcribe_speed_factor == 8.0

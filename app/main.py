@@ -24,15 +24,18 @@ async def lifespan(app: FastAPI):
     # Create temp directory
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load models
+    # Load models — on the dedicated MLX thread, never on the event loop.
+    # MLX GPU streams are per-thread, so the thread that loads the models must
+    # be the thread that runs inference (see app/core/mlx_worker.py).
     logger.info(f"Starting {settings.app_name} v{settings.version}")
     transcriber = init_services(settings)
-    transcriber.load()
 
-    from app.dependencies import get_embedder
+    from app.dependencies import get_embedder, get_mlx_worker
 
+    worker = get_mlx_worker()
+    await worker.run(transcriber.load)
     logger.info(f"Loading embedding model: {settings.embedding_model_repo}")
-    get_embedder().load()
+    await worker.run(get_embedder().load)
 
     _start_time = time.time()
     logger.info("Server ready")
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down")
+    worker.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -69,7 +73,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        from app.dependencies import get_embedder, get_transcriber
+        from app.dependencies import get_embedder, get_gate, get_transcriber
 
         transcriber = get_transcriber()
         embedder = get_embedder()
@@ -81,6 +85,7 @@ def create_app() -> FastAPI:
             "embedding_model": settings.embedding_model_repo.split("/")[-1],
             "embedding_model_loaded": embedder.is_ready(),
             "uptime_seconds": round(time.time() - _start_time),
+            **get_gate().snapshot(),
         }
 
     @app.get("/health/model")

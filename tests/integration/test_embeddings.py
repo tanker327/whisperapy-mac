@@ -29,6 +29,7 @@ async def client():
 
     with (
         patch.object(deps, "_embedder", mock_embedder),
+        patch.object(deps, "_gate", deps.build_gate(settings)),
         patch.object(deps, "get_settings", return_value=settings),
     ):
         app = create_app()
