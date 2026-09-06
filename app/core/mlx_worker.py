@@ -12,8 +12,9 @@ event loop stays free to serve health checks and reject busy requests.
 
 import asyncio
 import functools
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 

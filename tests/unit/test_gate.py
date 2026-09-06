@@ -8,10 +8,9 @@ from app.core.gate import JobGate
 
 async def test_single_job_runs():
     gate = JobGate(max_concurrent=1, max_queued=1, queue_wait_seconds=1)
-    async with gate.reserve("transcribe") as job:
-        async with gate.run(job, audio_seconds=10):
-            assert gate.busy
-            assert gate.active_jobs == 1
+    async with gate.reserve("transcribe") as job, gate.run(job, estimated_seconds=1.25):
+        assert gate.busy
+        assert gate.active_jobs == 1
     assert not gate.busy
     assert gate.active_jobs == 0
     assert gate.queued_jobs == 0
@@ -23,7 +22,7 @@ async def test_second_job_waits_then_runs():
     order: list[str] = []
 
     async def first():
-        async with gate.reserve("a") as job, gate.run(job, audio_seconds=1):
+        async with gate.reserve("a") as job, gate.run(job, estimated_seconds=0.125):
             order.append("a-start")
             await release.wait()
             order.append("a-end")
@@ -110,7 +109,7 @@ async def test_long_running_job_rejects_at_reserve():
 
     async def hold():
         # 1 hour of audio at 8x => ~450s remaining, far beyond 15s.
-        async with gate.reserve("a") as job, gate.run(job, audio_seconds=3600):
+        async with gate.reserve("a") as job, gate.run(job, estimated_seconds=450):
             await release.wait()
 
     t = asyncio.create_task(hold())
@@ -135,7 +134,7 @@ async def test_short_running_job_allows_queueing():
 
     async def hold():
         # 20s of audio => ~4.5s estimated, within the 15s budget.
-        async with gate.reserve("a") as job, gate.run(job, audio_seconds=20):
+        async with gate.reserve("a") as job, gate.run(job, estimated_seconds=2.5):
             await release.wait()
 
     t = asyncio.create_task(hold())
@@ -175,15 +174,44 @@ async def test_run_rejects_when_long_job_started_after_reserve():
     async with gate.reserve("b") as job_b:  # admitted: nothing running yet
 
         async def hold():
-            async with gate.reserve("a") as job_a:
-                async with gate.run(job_a, audio_seconds=3600):
-                    await release.wait()
+            async with (
+                gate.reserve("a") as job_a,
+                gate.run(job_a, estimated_seconds=450),
+            ):
+                await release.wait()
 
         t = asyncio.create_task(hold())
         await asyncio.sleep(0.01)
         with pytest.raises(ServiceBusyError) as exc:
-            async with gate.run(job_b, audio_seconds=1):
+            async with gate.run(job_b, estimated_seconds=0.125):
                 pass
         assert exc.value.retry_after >= 400
         release.set()
         await t
+
+
+def test_estimates():
+    gate = JobGate(speed_factor=8, embed_tokens_per_second=1000)
+    assert gate.estimate_transcribe(None) is None
+    assert gate.estimate_transcribe(80) == 10
+    assert gate.estimate_embed(None) is None
+    assert gate.estimate_embed(2500) == 2.5
+
+
+async def test_embed_job_estimate_drives_retry_after():
+    """A long embed job must be visible to the estimate, not fall back to 30s."""
+    gate = JobGate(max_concurrent=1, max_queued=1, queue_wait_seconds=15)
+    release = asyncio.Event()
+
+    async def hold():
+        async with gate.reserve("embed") as job, gate.run(job, estimated_seconds=600):
+            await release.wait()
+
+    t = asyncio.create_task(hold())
+    await asyncio.sleep(0.01)
+    with pytest.raises(ServiceBusyError) as exc:
+        async with gate.reserve("transcribe"):
+            pass
+    assert exc.value.retry_after >= 550
+    release.set()
+    await t

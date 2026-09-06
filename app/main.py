@@ -1,43 +1,44 @@
-import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from app.api import health
 from app.api.v1.router import router as v1_router
 from app.core.error_handler import register_error_handlers
 from app.core.logging import setup_logging
-from app.core.middleware import RequestIDMiddleware, TimingMiddleware
-from app.dependencies import get_settings, init_services
-
-_start_time: float = 0.0
+from app.core.middleware import RequestContextMiddleware
+from app.dependencies import (
+    get_embedder,
+    get_mlx_worker,
+    get_settings,
+    init_services,
+)
+from app.utils.file_handler import sweep_temp_dir
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage startup and shutdown."""
-    global _start_time
     settings = get_settings()
     setup_logging(settings)
-
-    # Create temp directory
-    settings.temp_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load models — on the dedicated MLX thread, never on the event loop.
-    # MLX GPU streams are per-thread, so the thread that loads the models must
-    # be the thread that runs inference (see app/core/mlx_worker.py).
     logger.info(f"Starting {settings.app_name} v{settings.version}")
+
+    settings.temp_dir.mkdir(parents=True, exist_ok=True)
+    sweep_temp_dir(settings)
+
+    # Load models on the dedicated MLX thread, never on the event loop.
+    # MLX GPU streams are per-thread, so the thread that loads the models must
+    # be the thread that runs inference (see app/core/mlx_worker.py). A load
+    # failure propagates and aborts startup on purpose.
     transcriber = init_services(settings)
-
-    from app.dependencies import get_embedder, get_mlx_worker
-
     worker = get_mlx_worker()
     await worker.run(transcriber.load)
-    logger.info(f"Loading embedding model: {settings.embedding_model_repo}")
     await worker.run(get_embedder().load)
 
-    _start_time = time.time()
+    health.mark_started()
     logger.info("Server ready")
 
     yield
@@ -52,56 +53,26 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.version,
         lifespan=lifespan,
+        description=(
+            "Local transcription and embedding service on Apple Silicon. "
+            "Native routes under /api/v1 plus OpenAI-compatible "
+            "/api/v1/audio/transcriptions, /api/v1/embeddings and /api/v1/models."
+        ),
     )
 
-    # Middleware (order matters — outermost first)
-    app.add_middleware(TimingMiddleware)
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://localhost:8000"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(RequestContextMiddleware)
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
-    # Error handlers
     register_error_handlers(app)
-
-    # Routes
+    app.include_router(health.router)
     app.include_router(v1_router)
-
-    @app.get("/health")
-    async def health():
-        from app.dependencies import get_embedder, get_gate, get_transcriber
-
-        transcriber = get_transcriber()
-        embedder = get_embedder()
-        return {
-            "status": "ok",
-            "version": settings.version,
-            "model": settings.model_repo.split("/")[-1],
-            "model_loaded": transcriber.is_ready(),
-            "embedding_model": settings.embedding_model_repo.split("/")[-1],
-            "embedding_model_loaded": embedder.is_ready(),
-            "uptime_seconds": round(time.time() - _start_time),
-            **get_gate().snapshot(),
-        }
-
-    @app.get("/health/model")
-    async def health_model():
-        from app.dependencies import get_embedder, get_transcriber
-
-        transcriber = get_transcriber()
-        embedder = get_embedder()
-        return {
-            "model_repo": settings.model_repo,
-            "model_loaded": transcriber.is_ready(),
-            "default_language": settings.default_language,
-            "embedding_model_repo": settings.embedding_model_repo,
-            "embedding_model_loaded": embedder.is_ready(),
-        }
-
     return app
 
 

@@ -14,15 +14,16 @@ safe (or fast) to run concurrently, so every model call goes through one
    timeout.
 
 Every ``ServiceBusyError`` carries a ``retry_after`` estimate derived from the
-audio length of the active job and a configurable real-time speed factor.
+expected length of the active job: audio seconds over a real-time speed factor
+for transcription, token count over a throughput figure for embeddings.
 """
 
 import asyncio
 import math
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import AsyncIterator
 
 from loguru import logger
 
@@ -41,7 +42,8 @@ class Job:
     kind: str
     reserved_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
-    audio_seconds: float | None = None
+    # Expected wall-clock seconds of GPU work, or None when unknown.
+    estimated_seconds: float | None = None
 
     @property
     def running(self) -> bool:
@@ -55,6 +57,7 @@ class JobGate:
         max_queued: int = 1,
         queue_wait_seconds: float = 15.0,
         speed_factor: float = 8.0,
+        embed_tokens_per_second: float = 2000.0,
     ):
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be >= 1")
@@ -64,8 +67,21 @@ class JobGate:
         self.max_queued = max_queued
         self.queue_wait_seconds = max(0.0, queue_wait_seconds)
         self.speed_factor = max(0.1, speed_factor)
+        self.embed_tokens_per_second = max(1.0, embed_tokens_per_second)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._jobs: list[Job] = []
+
+    # -------------------------------------------------------------- estimates
+
+    def estimate_transcribe(self, audio_seconds: float | None) -> float | None:
+        if audio_seconds is None:
+            return None
+        return audio_seconds / self.speed_factor
+
+    def estimate_embed(self, tokens: int | None) -> float | None:
+        if tokens is None:
+            return None
+        return tokens / self.embed_tokens_per_second
 
     # ------------------------------------------------------------------ state
 
@@ -86,16 +102,16 @@ class JobGate:
 
         Returns ``None`` when no slot is held or when nothing is known about
         the running jobs' length. Otherwise the smallest remaining time across
-        running jobs with a known audio length.
+        running jobs with a known estimate.
         """
         if not self.busy:
             return None
         now = time.monotonic()
         remaining: list[float] = []
         for job in self._jobs:
-            if not job.running or job.audio_seconds is None:
+            if not job.running or job.estimated_seconds is None:
                 continue
-            expected = job.audio_seconds / self.speed_factor + _JOB_OVERHEAD_SECONDS
+            expected = job.estimated_seconds + _JOB_OVERHEAD_SECONDS
             elapsed = now - (job.started_at or now)
             remaining.append(max(0.0, expected - elapsed))
         return min(remaining) if remaining else None
@@ -156,7 +172,7 @@ class JobGate:
 
     @asynccontextmanager
     async def run(
-        self, job: Job, audio_seconds: float | None = None
+        self, job: Job, estimated_seconds: float | None = None
     ) -> AsyncIterator[None]:
         """Hold a GPU slot for the duration of the model call."""
         if self.busy and self._wait_is_hopeless():
@@ -170,7 +186,7 @@ class JobGate:
             raise self._reject("queue wait timed out", job.kind) from None
 
         job.started_at = time.monotonic()
-        job.audio_seconds = audio_seconds
+        job.estimated_seconds = estimated_seconds
         try:
             yield
         finally:

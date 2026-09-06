@@ -1,4 +1,7 @@
 from functools import lru_cache
+from typing import Annotated
+
+from fastapi import Depends
 
 from app.config import Settings
 from app.core.gate import JobGate
@@ -59,6 +62,7 @@ def build_gate(settings: Settings) -> JobGate:
         max_queued=settings.max_queued_jobs,
         queue_wait_seconds=settings.queue_wait_seconds,
         speed_factor=settings.transcribe_speed_factor,
+        embed_tokens_per_second=settings.embed_tokens_per_second,
     )
 
 
@@ -66,8 +70,18 @@ def init_services(settings: Settings) -> TranscriberService:
     """Initialize services at startup. Returns transcriber for lifespan."""
     global _transcriber, _media_service, _embedder, _gate, _mlx_worker
     _transcriber = TranscriberService(settings)
-    _media_service = MediaService()
+    _media_service = MediaService(settings)
     _embedder = EmbedderService(settings)
     _gate = build_gate(settings)
     _mlx_worker = MlxWorker()
     return _transcriber
+
+
+# Annotated aliases so endpoints declare dependencies without calling
+# ``Depends`` in argument defaults (ruff B008).
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+TranscriberDep = Annotated[TranscriberService, Depends(get_transcriber)]
+MediaDep = Annotated[MediaService, Depends(get_media_service)]
+EmbedderDep = Annotated[EmbedderService, Depends(get_embedder)]
+GateDep = Annotated[JobGate, Depends(get_gate)]
+WorkerDep = Annotated[MlxWorker, Depends(get_mlx_worker)]

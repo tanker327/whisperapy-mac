@@ -1,35 +1,63 @@
-from fastapi import APIRouter, Depends
+import asyncio
+import base64
+import struct
 
-from app.config import Settings
-from app.core.gate import JobGate
-from app.core.mlx_worker import MlxWorker
-from app.dependencies import get_embedder, get_gate, get_mlx_worker, get_settings
+from fastapi import APIRouter
+
+from app.core.exceptions import InvalidRequestError
+from app.dependencies import EmbedderDep, GateDep, SettingsDep, WorkerDep
 from app.schemas.embedding import (
     EmbeddingData,
     EmbeddingRequest,
     EmbeddingResponse,
     Usage,
 )
-from app.services.embedder import EmbedderService
 
-router = APIRouter(prefix="/embeddings", tags=["embeddings"])
+router = APIRouter(prefix="/embeddings", tags=["embeddings", "openai-compatible"])
+
+
+def _encode(vector: list[float], fmt: str) -> list[float] | str:
+    if fmt == "base64":
+        # OpenAI encodes float32 little-endian.
+        return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode()
+    return vector
 
 
 @router.post("", response_model=EmbeddingResponse)
 async def create_embeddings(
     body: EmbeddingRequest,
-    settings: Settings = Depends(get_settings),
-    embedder: EmbedderService = Depends(get_embedder),
-    gate: JobGate = Depends(get_gate),
-    worker: MlxWorker = Depends(get_mlx_worker),
+    settings: SettingsDep,
+    embedder: EmbedderDep,
+    gate: GateDep,
+    worker: WorkerDep,
 ) -> EmbeddingResponse:
     """OpenAI-compatible text embeddings via Qwen3-Embedding."""
-    texts = [body.input] if isinstance(body.input, str) else body.input
-    async with gate.reserve("embed") as job, gate.run(job):
-        vectors, tokens = await worker.run(embedder.embed, texts, prompt=body.prompt)
-    data = [EmbeddingData(index=i, embedding=vec) for i, vec in enumerate(vectors)]
+    texts = body.texts
+    if len(texts) > settings.embedding_max_batch:
+        raise InvalidRequestError(
+            f"input has {len(texts)} items; the limit is {settings.embedding_max_batch}"
+        )
+
+    # Token counting is CPU-only (HF tokenizer, not MLX), so it runs in an
+    # ordinary thread rather than queueing behind whatever holds the GPU. It
+    # happens before the slot is taken so the gate can estimate this job.
+    counts = await asyncio.to_thread(embedder.count_tokens, texts)
+    estimate = gate.estimate_embed(sum(counts))
+
+    async with gate.reserve("embed") as job, gate.run(job, estimated_seconds=estimate):
+        result = await worker.run(
+            embedder.embed, texts, prompt=body.prompt, dimensions=body.dimensions
+        )
+
+    data = [
+        EmbeddingData(index=i, embedding=_encode(vec, body.encoding_format))
+        for i, vec in enumerate(result.vectors)
+    ]
     return EmbeddingResponse(
         data=data,
         model=settings.embedding_model_repo,
-        usage=Usage(prompt_tokens=tokens, total_tokens=tokens),
+        usage=Usage(
+            prompt_tokens=result.prompt_tokens, total_tokens=result.prompt_tokens
+        ),
+        truncated=result.truncated,
     )
